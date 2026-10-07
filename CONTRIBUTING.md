@@ -84,6 +84,10 @@ cover relevant input freshness, task/module/profile scope, failure/cancellation
 or cross-process coordination. Keep generated logs and evaluation reports out
 of commits.
 
+Open a pull request from a topic branch. `main` requires all five CI checks,
+resolved review conversations and an up-to-date branch. Merge with squash or
+rebase; completed topic branches are deleted automatically.
+
 Use Conventional Commits and a title that describes the final change. Mark
 breaking public tool/configuration changes explicitly. Test the plugin from a
 Spring application with `claude --plugin-dir /absolute/path/to/this/repo` when

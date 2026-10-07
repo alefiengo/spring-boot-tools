@@ -5,10 +5,10 @@ and install dependencies from its lockfile.
 
 ## Reporting a vulnerability
 
-Send a private report to **jose.fiengo.vega@gmail.com** with the subject prefix
-`[security] spring-boot-tools`. Include the affected component, reproduction
-steps, impact and a minimal example when possible. Avoid public reports that
-expose exploitable details or credentials.
+Use [GitHub private vulnerability reporting](https://github.com/alefiengo/spring-boot-tools/security/advisories/new).
+Include the affected component, reproduction steps, impact and a minimal
+example when possible. Keep exploitable details and credentials out of public
+issues and pull requests.
 
 Reports may concern hooks, the shared runtime, MCP execution, registrations
 or skill/agent instructions. Report defects in Claude Code or third-party
