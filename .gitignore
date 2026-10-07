@@ -1,0 +1,32 @@
+# --- Node / MCP server ---
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.npm/
+
+# --- Build artifacts ---
+dist/
+build/
+target/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+
+# --- Logs ---
+*.log
+logs/
+
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Claude Code local state (must not ship with the plugin) ---
+.claude/settings.local.json
+.claude/plugins/data/
+
+# --- Plugin evals run output (suite content is tracked, results are not) ---
+evals/results/

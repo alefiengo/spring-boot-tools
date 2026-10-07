@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "spring-boot": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp-server/index.js"
+      ],
+      "cwd": "${CLAUDE_PROJECT_DIR}",
+      "env": {
+        "PROJECT_ROOT": "${CLAUDE_PROJECT_DIR}",
+        "SPRING_BOOT_APP_PORT": "${user_config.app_port}"
+      }
+    }
+  }
+}

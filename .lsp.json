@@ -1,0 +1,10 @@
+{
+  "java": {
+    "command": "jdtls",
+    "args": [],
+    "extensionToLanguage": {
+      ".java": "java"
+    },
+    "restartOnCrash": true
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "spring-boot-tools",
+  "description": "Spring Boot toolkit: focused skills and reviewers, coordinated build hooks and six diagnostic MCP tools sharing project discovery and build execution.",
+  "version": "0.1.0",
+  "author": {
+    "name": "alefiengo"
+  },
+  "userConfig": {
+    "app_port": {
+      "type": "number",
+      "title": "App port",
+      "description": "Port where the Spring Boot app runs locally",
+      "default": 8080,
+      "min": 1,
+      "max": 65535
+    }
+  }
+}

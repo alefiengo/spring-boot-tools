@@ -1,0 +1,26 @@
+{
+  "name": "spring-boot-tools-marketplace",
+  "description": "Spring Boot productivity tools for Claude Code: skills, subagents, hooks, and an MCP server.",
+  "owner": {
+    "name": "alefiengo"
+  },
+  "plugins": [
+    {
+      "name": "spring-boot-tools",
+      "source": "./",
+      "description": "Spring Boot toolkit: 15 skills, 7 agents, 5 coordinated hooks, 6 MCP tools, optional Java LSP, and executable regression checks.",
+      "version": "0.1.0",
+      "author": {
+        "name": "alefiengo"
+      },
+      "keywords": [
+        "spring-boot",
+        "java",
+        "maven",
+        "gradle",
+        "flyway",
+        "testing"
+      ]
+    }
+  ]
+}

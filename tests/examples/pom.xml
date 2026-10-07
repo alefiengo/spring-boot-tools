@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>4.1.1</version><relativePath/>
+  </parent>
+  <groupId>com.example</groupId><artifactId>skill-examples</artifactId><version>1.0.0</version>
+  <properties>
+    <!-- Snippets use Java 21-compatible syntax; production Java 25 remains supported. -->
+    <java.version>21</java.version>
+    <spring-modulith.version>2.1.1</spring-modulith.version>
+    <gatling.version>3.14.9</gatling.version>
+    <pact.version>4.7.5</pact.version>
+  </properties>
+  <dependencyManagement><dependencies>
+    <dependency><groupId>org.springframework.modulith</groupId><artifactId>spring-modulith-bom</artifactId><version>${spring-modulith.version}</version><type>pom</type><scope>import</scope></dependency>
+  </dependencies></dependencyManagement>
+  <dependencies>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-oauth2-resource-server</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
+    <dependency><groupId>org.bouncycastle</groupId><artifactId>bcprov-jdk18on</artifactId><version>1.86</version></dependency>
+    <dependency><groupId>io.github.resilience4j</groupId><artifactId>resilience4j-ratelimiter</artifactId><version>2.4.0</version></dependency>
+    <dependency><groupId>io.gatling.highcharts</groupId><artifactId>gatling-charts-highcharts</artifactId><version>${gatling.version}</version><scope>test</scope></dependency>
+    <dependency><groupId>io.gatling</groupId><artifactId>gatling-core-java</artifactId><version>${gatling.version}</version><scope>test</scope></dependency>
+    <dependency><groupId>io.gatling</groupId><artifactId>gatling-http-java</artifactId><version>${gatling.version}</version><scope>test</scope></dependency>
+    <dependency><groupId>au.com.dius.pact.consumer</groupId><artifactId>junit5</artifactId><version>${pact.version}</version><scope>test</scope></dependency>
+    <dependency><groupId>au.com.dius.pact.provider</groupId><artifactId>junit5</artifactId><version>${pact.version}</version><scope>test</scope></dependency>
+    <dependency><groupId>org.springframework.modulith</groupId><artifactId>spring-modulith-starter-test</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+  </dependencies>
+  <build><plugins>
+  <plugin><groupId>io.gatling</groupId><artifactId>gatling-maven-plugin</artifactId><version>4.20.8</version></plugin>
+  <plugin>
+    <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId>
+    <!-- Fast default smoke tests; lifecycle.py runs Pact/Gatling against local fixtures separately. -->
+    <configuration><includes><include>**/ExampleSmokeTest.java</include><include>**/ArchitectureTest.java</include></includes></configuration>
+  </plugin></plugins></build>
+</project>
