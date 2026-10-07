@@ -145,17 +145,27 @@ inside that lock.
 
 ## Repository layout
 
+Versioned top-level directories and configuration files:
+
 | Path | Contents |
 |---|---|
 | `.claude-plugin/` | Plugin and marketplace manifests |
-| `skills/`, `agents/` | Guidance and specialist roles |
-| `hooks/` | Event registration and hook implementations |
-| `runtime/` | Shared project discovery, build execution and local gate records |
-| `mcp-server/` | Node.js MCP server and dependency lockfile |
-| `tests/` | Deterministic regressions and executable skill examples |
+| `.github/` | CI workflow, Dependabot configuration, issue forms and PR template |
+| `agents/` | Specialist design, review and test-writing roles |
+| `docs/` | Architecture, shared runtime behavior and operational limits |
 | `evals/` | Behavioral prompts, graders, fixtures and frozen-response judge tooling |
-| `.github/workflows/ci.yml` | Deterministic tests and example validation |
-| `docs/architecture.md` | Runtime behavior and operational limits |
+| `hooks/` | Event registration, Bash launchers and Python hook implementation |
+| `mcp-server/` | Node.js MCP server, package metadata and dependency lockfile |
+| `runtime/` | Shared project discovery, build execution and local gate records |
+| `skills/` | Task guidance in one `SKILL.md` per skill |
+| `tests/` | Deterministic regression suites and executable Java/Pact/Gatling examples |
+| `.gitignore` | Exclusions for local state, dependencies and generated artifacts |
+| `.lsp.json` | Optional Java language-server registration |
+| `.mcp.json` | MCP server launch configuration and project/user settings |
+
+The root documentation consists of this README, `CONTRIBUTING.md`,
+`SECURITY.md` and `LICENSE`. Generated dependencies, caches and evaluation
+reports are excluded from version control.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for validation and development,
 [evals/README.md](evals/README.md) for model evaluations, and
