@@ -1,5 +1,9 @@
 # Spring Boot Tools for Claude Code
 
+[![CI](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alefiengo/spring-boot-tools)](https://github.com/alefiengo/spring-boot-tools/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Claude Code plugin for developing and reviewing Spring Boot applications.
 It provides 15 skills, seven specialist agents, five hooks and six MCP tools.
 Build execution and verification share one runtime so hooks and tools can
@@ -23,11 +27,21 @@ versions or adapting examples.
 For local use, clone the plugin and install its server dependencies:
 
 ```bash
-git clone https://github.com/alefiengo/claude-sb-tools ~/dev/claude-sb-tools
-npm ci --prefix ~/dev/claude-sb-tools/mcp-server
+git clone https://github.com/alefiengo/spring-boot-tools ~/dev/spring-boot-tools
+npm ci --prefix ~/dev/spring-boot-tools/mcp-server
 cd /path/to/your/spring-project
-claude --plugin-dir ~/dev/claude-sb-tools
+claude --plugin-dir ~/dev/spring-boot-tools
 ```
+
+Once loaded, try a request such as:
+
+```text
+Inspect this Spring Boot project, identify its build tool and modules,
+then run its tests and summarize any failures.
+```
+
+For a focused review, use `/sb-pr-review`. Claude selects the relevant
+reviewers and coordinates a verification gate.
 
 The plugin registers its MCP server, hooks and optional Java language server
 from `.mcp.json`, `hooks/hooks.json` and `.lsp.json`.
@@ -35,7 +49,7 @@ from `.mcp.json`, `hooks/hooks.json` and `.lsp.json`.
 For marketplace installation:
 
 ```bash
-claude plugin marketplace add https://github.com/alefiengo/claude-sb-tools
+claude plugin marketplace add https://github.com/alefiengo/spring-boot-tools
 claude plugin install spring-boot-tools@spring-boot-tools-marketplace
 ```
 
@@ -131,17 +145,27 @@ inside that lock.
 
 ## Repository layout
 
+Versioned top-level directories and configuration files:
+
 | Path | Contents |
 |---|---|
 | `.claude-plugin/` | Plugin and marketplace manifests |
-| `skills/`, `agents/` | Guidance and specialist roles |
-| `hooks/` | Event registration and hook implementations |
-| `runtime/` | Shared project discovery, build execution and local gate records |
-| `mcp-server/` | Node.js MCP server and dependency lockfile |
-| `tests/` | Deterministic regressions and executable skill examples |
+| `.github/` | CI workflow, Dependabot configuration, issue forms and PR template |
+| `agents/` | Specialist design, review and test-writing roles |
+| `docs/` | Architecture, shared runtime behavior and operational limits |
 | `evals/` | Behavioral prompts, graders, fixtures and frozen-response judge tooling |
-| `.github/workflows/ci.yml` | Deterministic tests and example validation |
-| `docs/architecture.md` | Runtime behavior and operational limits |
+| `hooks/` | Event registration, Bash launchers and Python hook implementation |
+| `mcp-server/` | Node.js MCP server, package metadata and dependency lockfile |
+| `runtime/` | Shared project discovery, build execution and local gate records |
+| `skills/` | Task guidance in one `SKILL.md` per skill |
+| `tests/` | Deterministic regression suites and executable Java/Pact/Gatling examples |
+| `.gitignore` | Exclusions for local state, dependencies and generated artifacts |
+| `.lsp.json` | Optional Java language-server registration |
+| `.mcp.json` | MCP server launch configuration and project/user settings |
+
+The root documentation consists of this README, `CONTRIBUTING.md`,
+`SECURITY.md` and `LICENSE`. Generated dependencies, caches and evaluation
+reports are excluded from version control.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for validation and development,
 [evals/README.md](evals/README.md) for model evaluations, and

@@ -1,0 +1,23 @@
+name: Feature proposal
+description: Suggest an improvement to Spring Boot development workflows.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: Describe the task and what the current plugin makes difficult.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the observable outcome and how it fits existing tools.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Can an existing skill, agent or MCP tool cover this?

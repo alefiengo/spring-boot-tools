@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a reproducible problem in the plugin.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: For vulnerabilities, use the private security reporting link instead. Remove credentials and private source from examples and logs.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Plugin version, Claude Code version, OS, and relevant Node/Python/JDK/build-tool versions.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Skill or agent
+        - Hook or shared build runtime
+        - MCP tool
+        - Installation or documentation
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include a minimal request or project example when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Optional. Redact credentials, personal data and private paths.
+      render: text
