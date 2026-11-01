@@ -79,6 +79,77 @@ After changing or updating the plugin, reinstall it and restart the wrapper
 from the matching checkout. Installed skills are cached by Codex, while the
 wrapper loads MCP from its own bundle; keep those versions aligned.
 
+## Offline installation doctor
+
+The local doctor itself requires Python 3.11+ to start. It uses only the Python
+standard library, so it can diagnose missing Node or MCP dependencies before
+those dependencies are installed. If no suitable Python is available, obtain
+it separately; a Python script cannot diagnose its own missing interpreter.
+Run it against a trusted plugin checkout and trusted Node/Python executables:
+
+```bash
+python3 /absolute/path/to/spring-boot-tools/scripts/install-doctor.py \
+  --workspace /absolute/path/to/application
+python3 /absolute/path/to/spring-boot-tools/scripts/install-doctor.py --json \
+  --workspace /absolute/path/to/application --project /absolute/path/to/application
+```
+
+Quote paths containing spaces. `--workspace` defaults to the current directory;
+it represents the MCP process cwd you intend to launch. `--plugin-root` defaults
+to the doctor's containing checkout, resolved from the script's own location.
+The doctor checks Linux/macOS support, Node >=20.3, Python >=3.11, local MCP
+ESM import target resolution and file existence (including the server's `/stdio`
+export), registration structure, launcher and runtime support file paths,
+bundle version agreement, and any inherited `SBT_PLUGIN_ROOT`. Codex's inline
+loader must exactly match the supported `codex/launch.mjs` template; equivalent
+custom loader scripts require separate verification. Unset
+`SBT_PLUGIN_ROOT` is acceptable when using `codex/run.mjs`; a relative or
+different bundle path is an error. An inherited stale `PROJECT_ROOT` produces a
+warning because the Codex launcher replaces it with its actual cwd.
+
+By default workspace checking only requires an existing directory outside the
+plugin bundle. `--project PATH` additionally sends only `action: discover` to
+the shared Python runtime for both paths and compares their canonical project
+roots. Nested workspaces in the same discovered reactor are accepted. This
+static check does not activate Maven profiles, evaluate dynamic Gradle settings,
+execute project wrappers, or verify Java/build prerequisites. The doctor does
+not discover the cwd of an already running host or inspect installed skill
+caches; provide the intended paths and check `analyze_project` in the session.
+
+Both text and `--json` output use exit status 0 for passing checks (warnings and
+skipped optional checks are allowed), 1 for diagnostic failures, and 2 for invalid
+CLI arguments. JSON reports expose `schemaVersion: 1`, `ok`, `exitCode`,
+`pluginRoot`, `workspace`, and ordered `checks` with stable `id`, `status`, and
+human-readable `message` fields. Status is `ok`, `error`, `warning`, or `skipped`;
+additional evidence fields depend on the check. Messages are not a parsing API.
+Argument errors use argparse's stderr usage text, including with `--json`.
+The bootstrap interpreter must already work for these exit codes to apply.
+
+Each executable probe is limited to five seconds and 64 KiB of captured output.
+`--node` and `--python` select trusted executable paths/names, without shell
+arguments. Probes strip inherited Node coverage, compile-cache, warning-output
+and REPL-history settings, plus Python cache/history output paths.
+Dependency checking resolves ESM import targets without importing dependencies;
+it does not prove dependency integrity, installed version compatibility, or
+successful server startup. The resolver uses `--experimental-import-meta-resolve`
+with an explicit parent module URL, as supported by the
+[Node 20.3 API](https://nodejs.org/download/release/v20.3.0/docs/api/esm.html#importmetaresolvespecifier-parent).
+The doctor never writes files, installs packages,
+changes configuration, uses the network, runs builds, or launches Claude/Codex,
+MCP servers, Java or language servers. It is a local executable, not an eighth
+MCP tool. No protocol check runs by default. The existing optional
+`python3 tests/codex/cli-smoke.py` is separate and creates an isolated temporary
+host configuration as described below.
+
+Run only the focused doctor regressions with:
+
+```bash
+python3 -B -m unittest discover -s tests/install-doctor -v
+```
+
+See the [capability matrix](capability-matrix.md) for host-specific registrations
+and the limits of installation/protocol evidence.
+
 ## Supported capabilities and limits
 
 - The shared skills and seven stdio MCP tools are available locally. Skill

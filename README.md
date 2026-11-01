@@ -26,6 +26,19 @@ For Codex installation, configuration and host differences, see
 [Codex support](docs/codex.md). Both hosts use the same MCP implementation;
 Codex verification is explicit and does not depend on Claude's Stop hook.
 
+Check a local installation without changing it:
+
+```bash
+python3 /absolute/path/to/spring-boot-tools/scripts/install-doctor.py \
+  --workspace /absolute/path/to/application --project /absolute/path/to/application
+```
+
+Add `--json` for structured diagnostics. The doctor checks local prerequisites,
+registrations and workspace selection; it does not install packages, change
+host configuration, contact services or execute builds. See the
+[capability matrix](docs/capability-matrix.md) for host differences and the
+distinction between functional tests and measured usefulness.
+
 To create a project, explicitly ask, for example:
 
 ```text
@@ -180,6 +193,7 @@ Versioned top-level directories and configuration files:
 | `hooks/` | Event registration, Bash launchers and Python hook implementation |
 | `mcp-server/` | Node.js MCP server, package metadata and dependency lockfile |
 | `runtime/` | Shared project discovery, build execution and local gate records |
+| `scripts/` | Offline installation diagnostics |
 | `skills/` | Task guidance in one `SKILL.md` per skill |
 | `tests/` | Deterministic regression suites and executable Java/Pact/Gatling examples |
 | `.gitignore` | Exclusions for local state, dependencies and generated artifacts |
