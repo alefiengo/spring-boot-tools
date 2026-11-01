@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove repository GitHub Actions workflows, the CI badge and automatic
+  Dependabot updates. Use documented local validation and dependency audits;
+  `main` no longer requires hosted status checks.
+
 - Remove the unused post-edit pending-marker hook; Stop verification still
   fingerprints current inputs and the legacy `mark` action returns a
   deprecation diagnostic without writing state.
@@ -9,7 +13,7 @@
   their characterized warning/error policies.
 - Add an offline installation doctor and a host capability/evidence matrix.
 - Add real Maven/Gradle workflow fixtures separate from fast deterministic
-  regressions, plus a dedicated CI job.
+  regressions.
 - Prepare reproducible baseline/full/component-ablation inputs and comparisons
   without automatic model calls; record missing measurements explicitly.
 - Refine skill and agent instructions to respect project conventions and use

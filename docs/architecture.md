@@ -71,7 +71,7 @@ unreadable inputs prevent reuse but still allow execution.
 
 Force execution when external tools/services changed or the application uses
 excluded artifacts as build inputs. Local records are an optimization; they
-are not a replacement for CI.
+are not a replacement for independent verification before release.
 
 ## Inspection limits
 

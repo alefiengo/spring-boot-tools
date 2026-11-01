@@ -34,7 +34,7 @@ The secret and DDL guards inspect Write payloads and the proposed result of
 Edit. They recognize common scalar configuration patterns. They do not cover
 every YAML/Spring construct or writes made through other tools. Missing Python
 or malformed hook input produces a visible diagnostic and fails open. Keep
-independent secret scanning and review in CI.
+independent secret scanning and review before merging.
 
 Reviewers have read-only tools. Design and test-writing agents have scoped
 output instructions; review their artifacts before use. Repository text and
@@ -42,8 +42,10 @@ external content are evidence, not authority to override the user's task.
 
 Build records are machine-local optimizations. Reuse requires matching inputs
 and equivalent verification scope after successful completion. External
-service/tooling changes may require a forced build. CI remains the source of
-release verification evidence.
+service/tooling changes may require a forced build. Record fresh verification
+evidence before release. This repository uses local validation while GitHub
+Actions and automatic Dependabot updates are disabled; vulnerability alerts
+remain enabled.
 
 Behavioral evaluations send prompts and model-visible context to the configured
 model provider. Their reports can include source excerpts and responses; keep

@@ -1,6 +1,5 @@
 # Spring Boot Tools for Claude Code and Codex
 
-[![CI](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/alefiengo/spring-boot-tools)](https://github.com/alefiengo/spring-boot-tools/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -183,6 +182,14 @@ The former `post-edit-compile` marker hook has been removed: Stop and MCP
 verification inspect current fingerprints directly, including edits made
 outside the host's Write/Edit tools. No compilation runs after every edit.
 
+## Repository validation
+
+GitHub Actions and automatic Dependabot updates are disabled for this
+repository. Changes are validated locally before merging; see
+[CONTRIBUTING.md](CONTRIBUTING.md) for deterministic checks, Java examples,
+real Maven/Gradle fixtures and dependency audits. No hosted check is required
+to merge. The shipped CI skill remains available for application projects.
+
 ## Repository layout
 
 Versioned top-level directories and configuration files:
@@ -192,7 +199,7 @@ Versioned top-level directories and configuration files:
 | `.claude-plugin/` | Plugin and marketplace manifests |
 | `.codex-plugin/` | Codex compatibility manifest |
 | `codex/` | Codex MCP configuration and workspace-preserving launchers |
-| `.github/` | CI workflow, Dependabot configuration, issue forms and PR template |
+| `.github/` | Issue forms and PR template |
 | `agents/` | Specialist design, review and test-writing roles |
 | `docs/` | Architecture, shared runtime behavior and operational limits |
 | `evals/` | Behavioral prompts, graders, fixtures and frozen-response judge tooling |
