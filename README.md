@@ -39,6 +39,12 @@ host configuration, contact services or execute builds. See the
 [capability matrix](docs/capability-matrix.md) for host differences and the
 distinction between functional tests and measured usefulness.
 
+The [component evidence inventory](docs/component-evidence.json) distinguishes
+functional coverage from measured model benefit. The
+[evaluation methodology](docs/evaluation-methodology.md) explains offline
+baseline/full/component preparation, provenance and separate generation/judging
+metrics. No live comparative effectiveness or cost-saving result is claimed.
+
 To create a project, explicitly ask, for example:
 
 ```text

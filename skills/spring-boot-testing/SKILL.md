@@ -22,6 +22,11 @@ Activates when asked to generate tests, or when discussing coverage, mocking, in
 
 ## Default stack
 
+Inspect the build and existing tests first. Reuse their framework, assertion
+library, naming and fixture conventions; the table and examples are options
+when the project has no established equivalent. Do not add AssertJ or Mockito
+solely to match this guide.
+
 | Layer           | Framework                        | Mocking            |
 |-----------------|----------------------------------|--------------------|
 | Unit tests      | JUnit 5 + AssertJ                | Mockito            |
@@ -41,6 +46,8 @@ For Boot 4 MVC/JPA slices add the relevant test-scoped modular starters (`spring
 Mirror the source: `src/test/java/com/example/<project>/...`
 
 ### 2. Method naming
+
+Keep the project naming style. With no existing convention, one readable option is:
 
 ```
 should<Expectation>_when<Condition>
@@ -69,7 +76,8 @@ assertThat(result).isPresent();
 assertThat(result.get().email()).isEqualTo("fixture@test.com");
 ```
 
-Use **AssertJ** fluent assertions, never `Assert.assertEquals`.
+Use the project assertion library. The example uses AssertJ; JUnit assertions
+are equally suitable when they express the required observable result.
 
 ### 4. Repository & JPA tests (`@DataJpaTest`)
 
@@ -117,7 +125,8 @@ class UserControllerMockMvcTest {
 
 ### 6. Integration tests (`@SpringBootTest` + Testcontainers)
 
-Use Testcontainers for a real database (PostgreSQL). Use the JUnit Testcontainers extension with static `@Container` fields for class lifecycle.
+For database integration, use the production database engine. The PostgreSQL
+Testcontainers example below applies when that is the project database. Use the JUnit Testcontainers extension with static `@Container` fields for class lifecycle.
 
 ```java
 @SpringBootTest(webEnvironment = RANDOM_PORT)

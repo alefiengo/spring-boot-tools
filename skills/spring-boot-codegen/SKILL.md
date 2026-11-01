@@ -1,7 +1,7 @@
 ---
 name: spring-boot-codegen
 description: >
-  Guides generation of idiomatic Spring Boot code (Spring Boot 4.x / Java 25+):
+  Guides generation of Spring Boot code using the project's Java and Boot versions:
   JPA entities, REST controllers, services, repositories, DTOs, configuration,
   and project-specific architecture conventions. Use when asked to create
   endpoints, entities, DTOs, mappers, configurations, or any new Spring Boot
@@ -21,6 +21,10 @@ Use this skill when asked to generate entities, REST endpoints, services, reposi
 For a request to scaffold a new project, use [Initializr](../spring-boot-initializr/SKILL.md) only when explicitly requested and its destination checks pass. Adding code to an existing application never authorizes initializing another project.
 
 ## Layer conventions
+
+Preserve the project package structure and naming. The layout below is an
+example for a project without established boundaries; do not introduce these
+layers or mapper classes unless the requested behavior needs them.
 
 ```
 src/main/java/com/example/<project>/
@@ -84,7 +88,9 @@ public String describe(OrderState state) {
 }
 ```
 
-Use the JPA entity pattern below only for persistence-backed aggregates; keep the record domain model as the language for use-case logic and map between them in the mapper layer.
+Use JPA entities for persistence-backed aggregates. A separate record domain
+model and mapper are optional; preserve an existing model that already expresses
+the required invariants without adding a second representation.
 
 ### 2. Persistence-backed model
 
@@ -92,7 +98,7 @@ When generating a persistence-backed aggregate, preserve the existing entity acc
 
 ### 3. REST controllers
 
-- Naming: entity in English, plural, hyphens. `GET /api/v1/users`
+- Follow the existing resource naming and versioning contract; `GET /api/v1/users` is an example.
 - Use `@RestController`, `@RequestMapping("${api.base-path}/v1/<resource>")`
 - DTOs in request parameters, never JPA entities.
 - Pagination: accept `page` (0-based) and `size`, return `Page<DTO>` wrapped with metadata.

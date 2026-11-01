@@ -5,8 +5,8 @@ description: >
   monolith). Feature-based module structure, encapsulation with internal/,
   automatic boundary verification, communication via domain events, isolated
   testing (@ApplicationModuleTest), and migration from traditional monoliths.
-  Use for new projects or when the current monolith has grown without clear
-  boundaries.
+  Use when Spring Modulith adoption, module boundary verification or modular
+  monolith design is requested; new projects alone do not require Modulith.
 ---
 
 # Spring Modulith (modular monolith)
@@ -131,7 +131,7 @@ class OrderModuleTest {
 
 ## Migrating an existing monolith
 
-1. **Add Modulith** as a dependency and create the verification tests.
+1. **Confirm adoption scope** and compatibility before adding Modulith and verification tests. Existing package boundaries may already meet the requirement.
 2. **Move classes by feature** to top-level packages and fix imports as each step compiles.
 3. **Create `internal/`** inside each module and move implementations there.
 4. **Extract events** where one module needs another's data.
@@ -142,11 +142,13 @@ class OrderModuleTest {
 
 | Stage                     | When                                                                 |
 |---------------------------|----------------------------------------------------------------------|
-| Modulith                  | whenever you can                                                     |
-| Modulith + events         | when a module scales independently                                   |
+| Modulith                  | when verifiable in-process module boundaries justify adoption                                                     |
+| Modulith + events         | when asynchronous in-process collaboration and delivery semantics are required                                   |
 | Extract module to service | when you need independent deployment, a dedicated team, or a different resource scale |
 
-Do not extract microservices until Modulith with events hurts. It usually hurts when the event infrastructure (outbox, retry, DLQ) is more complex than the module itself.
+Compare operational cost, team ownership, consistency and deployment constraints.
+Independent scaling or deployment can justify a service; an ordinary layered
+monolith can also be sufficient. Modulith and events are optional design choices.
 
 ## References
 
