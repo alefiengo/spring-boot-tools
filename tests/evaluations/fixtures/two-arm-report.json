@@ -1,0 +1,22 @@
+{
+  "fixturePurpose": "Synthetic offline parser regression; no model was executed",
+  "claudeVersion": "fixture-host-1",
+  "modelRequested": "fixture-generator",
+  "effort": "high",
+  "executionLimits": {"timeoutSeconds": 60, "maxTurns": 4},
+  "cases": [{
+    "name": "paired",
+    "promptMarkdown": "Explain the requested behavior.",
+    "arms": {
+      "without": [{"response": "Missing requirement.", "graders": [
+        {"name": "no-activation", "scored": true, "passed": true, "evidence": "No tool call"}
+      ]}],
+      "with": [{"response": "Required behavior is present.", "duration_ms": 12,
+        "model": "fixture-generator-resolved", "usage": {"input_tokens": 20, "output_tokens": 6},
+        "graders": [{"name": "no-activation", "scored": true, "passed": false, "evidence": "Skill called"},
+          {"name": "quality", "scored": true, "passed": true, "evidence": "Required behavior is present."}]
+      }],
+      "minus": [{"response": "Missing requirement.", "graders": []}]
+    }
+  }]
+}

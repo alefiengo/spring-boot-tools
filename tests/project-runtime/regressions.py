@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared runtime regression tests: real OS processes, isolated fake wrappers."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -12,10 +13,31 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / 'runtime/project_runtime.py'
 sys.path.insert(0, str(RUNTIME.parent))
-from project_runtime import discover, build_plan, run_build, test_report_snapshot
+from project_runtime import discover, build_plan, run_build, state_dir, test_report_snapshot
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_legacy_mark_discovers_without_writing_state(self):
+        key = hashlib.sha256(str(self.root).encode()).hexdigest()
+        folder = Path(tempfile.gettempdir()) / f'sb-tools-build-{os.getuid()}-{key}'
+        self.assertFalse(folder.exists())
+        result = self.invoke(action='mark')
+        self.assertEqual(result['root'], str(self.root))
+        self.assertIn('deprecated', result['diagnostic'])
+        self.assertFalse(folder.exists())
+        self.assertFalse((self.root / 'target/calls').exists())
+
+    def test_legacy_pending_file_has_no_consumer(self):
+        folder = state_dir(self.root)
+        pending = folder / 'pending.json'
+        pending.write_text('{broken legacy marker')
+        self.assertFalse(self.invoke()['reused'])
+        self.assertTrue(self.invoke()['reused'])
+        self.source.write_text('class App { int changed; }')
+        self.assertFalse(self.invoke()['reused'])
+        self.assertEqual(pending.read_text(), '{broken legacy marker')
+        self.assertEqual(len(self.calls()), 2)
+
     def test_profile_module_uses_reactor_root(self):
         (self.root / 'pom.xml').write_text('<project><profiles><profile><id>integration</id><modules><module>integration</module></modules></profile></profiles></project>')
         child = self.root / 'integration'

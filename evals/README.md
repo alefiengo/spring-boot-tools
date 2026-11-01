@@ -52,3 +52,21 @@ bundle when comparing models later; do not freeze against changed criteria.
 Model aliases may resolve differently over time: use full model IDs when
 pinning a release gate. A favorable generated sample is not proof of all
 possible model behavior, and these checks do not replace executable tests.
+
+## Offline usefulness evidence
+
+See [evaluation methodology](../docs/evaluation-methodology.md) and the
+[component coverage map](../docs/component-evidence.json) for the offline
+`ablation.py plan`, `prepare` and `compare` commands. They never execute models.
+The original 17 cases plus two unrun Initializr cases map task coverage without
+claiming effectiveness. Only skills/agents support automated selected-minus
+preparation; hooks, MCP and LSP marginal value remain unmeasured.
+
+The freezer accepts `--arm`, `--variant` and `--provenance` while retaining
+`with` / run 0 defaults. It preserves original grader and activation results
+separately from independent quality judgments. Plans pin the Claude host/version,
+intended effort, limits and nullable metric ceilings; exported actual-run
+metadata must establish those facts. The installed evaluator has no `--effort`
+flag. Initializr's positive live case needs explicit tool access, real MCP
+servers and scaffolding permission; `--trust-plugin` alone does not grant them.
+No live comparative evidence is included in this change.

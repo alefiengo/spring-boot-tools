@@ -1,0 +1,2 @@
+rootProject.name = 'runtime-fixture'
+include('core', 'extra')

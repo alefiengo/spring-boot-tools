@@ -2,3 +2,4 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 "$ROOT/tests/project-runtime/regressions.py"
+python3 "$ROOT/tests/project-runtime/sql-regressions.py"

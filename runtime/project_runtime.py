@@ -442,12 +442,7 @@ def run_build(request, own_process_group=False):
             ok = process.returncode == 0 and not timed_out and not too_large
             if ok and verification and before is not None and before == after:
                 state['verifiedScopes'] = {scope: after}
-                state.pop('pendingFingerprint', None)
                 state_write(folder, state)
-                try:
-                    (folder / 'pending.json').unlink()
-                except FileNotFoundError:
-                    pass
             report_result = {}
             if collect_reports:
                 reports_after = test_report_snapshot(report_root, report_modules)
@@ -467,22 +462,6 @@ def run_build(request, own_process_group=False):
             finally:
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
-
-
-def mark_pending(location):
-    info = discover(location)
-    folder = state_dir(info['root'])
-    # A hint has its own file, so editing never waits for an ongoing build. The
-    # actual success gate remains locked and compares all current input contents.
-    handle, temporary = tempfile.mkstemp(prefix='pending-', dir=folder)
-    try:
-        with os.fdopen(handle, 'w') as output:
-            json.dump({'pending': True}, output)
-        os.replace(temporary, folder / 'pending.json')
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-    return info
 
 
 def main():
@@ -507,8 +486,12 @@ def main():
             result = build_plan(request)
         elif action == 'run':
             result = run_build(request)
+        elif action == 'lint-migrations':
+            from sql_lint import lint_migrations
+            result = lint_migrations(request.get('migrations'))
         elif action == 'mark':
-            result = mark_pending(request.get('projectRoot') or os.getcwd())
+            result = dict(discover(request.get('projectRoot') or os.getcwd()),
+                          diagnostic='action=mark is deprecated; Stop verification fingerprints current inputs without pending markers.')
         else:
             raise ValueError('Unknown runtime action')
         encoded = json.dumps(result)

@@ -1,11 +1,10 @@
 # Spring Boot Tools for Claude Code and Codex
 
-[![CI](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/alefiengo/spring-boot-tools)](https://github.com/alefiengo/spring-boot-tools/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A plugin for developing and reviewing Spring Boot applications with Claude Code and Codex.
-It provides 16 shared skills and seven MCP tools. Claude Code additionally loads seven specialist agents and five hooks.
+It provides 16 shared skills and seven MCP tools. Claude Code additionally loads seven specialist agents and four hooks.
 Build execution and verification share one runtime so hooks and tools can
 coordinate their work.
 
@@ -25,6 +24,25 @@ versions or adapting examples.
 For Codex installation, configuration and host differences, see
 [Codex support](docs/codex.md). Both hosts use the same MCP implementation;
 Codex verification is explicit and does not depend on Claude's Stop hook.
+
+Check a local installation without changing it:
+
+```bash
+python3 /absolute/path/to/spring-boot-tools/scripts/install-doctor.py \
+  --workspace /absolute/path/to/application --project /absolute/path/to/application
+```
+
+Add `--json` for structured diagnostics. The doctor checks local prerequisites,
+registrations and workspace selection; it does not install packages, change
+host configuration, contact services or execute builds. See the
+[capability matrix](docs/capability-matrix.md) for host differences and the
+distinction between functional tests and measured usefulness.
+
+The [component evidence inventory](docs/component-evidence.json) distinguishes
+functional coverage from measured model benefit. The
+[evaluation methodology](docs/evaluation-methodology.md) explains offline
+baseline/full/component preparation, provenance and separate generation/judging
+metrics. No live comparative effectiveness or cost-saving result is claimed.
 
 To create a project, explicitly ask, for example:
 
@@ -134,7 +152,7 @@ need no application build or application reviewers.
 
 | Tool | Responsibility |
 |---|---|
-| `initialize_project` | Generate a new project through Spring Initializr into a safe empty directory; refuse existing projects |
+| `initialize_project` | Generate a project through Spring Initializr into an absent target; refuse existing project contexts and targets |
 | `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings |
 | `run_build` | Execute controlled Maven/Gradle tasks with module/profile scope |
 | `run_tests` | Run tests and summarize fresh XML reports and failures |
@@ -152,7 +170,6 @@ configured database inspection provide additional evidence when requested.
 | `guard-secrets` | Before Write/Edit | Inspect proposed configuration for hard-coded credentials |
 | `guard-ddl` | Before Write/Edit | Reject destructive Hibernate schema settings outside recognized development configuration |
 | `lint-migration` | After Write/Edit | Check migration names and flag destructive SQL |
-| `post-edit-compile` | After Write/Edit | Record relevant edits for batched verification |
 | `verify-on-stop` | Stop | Run or reuse an equivalent successful Maven verify / Gradle check |
 
 Verification reuse requires matching project inputs, task, module and
@@ -160,6 +177,18 @@ profiles. Failed/cancelled builds and compile/test-only results cannot satisfy
 a full verification gate. Explicit reruns can force execution. The shared
 runtime serializes plugin builds for a project and captures test reports
 inside that lock.
+
+The former `post-edit-compile` marker hook has been removed: Stop and MCP
+verification inspect current fingerprints directly, including edits made
+outside the host's Write/Edit tools. No compilation runs after every edit.
+
+## Repository validation
+
+GitHub Actions and automatic Dependabot updates are disabled for this
+repository. Changes are validated locally before merging; see
+[CONTRIBUTING.md](CONTRIBUTING.md) for deterministic checks, Java examples,
+real Maven/Gradle fixtures and dependency audits. No hosted check is required
+to merge. The shipped CI skill remains available for application projects.
 
 ## Repository layout
 
@@ -170,13 +199,14 @@ Versioned top-level directories and configuration files:
 | `.claude-plugin/` | Plugin and marketplace manifests |
 | `.codex-plugin/` | Codex compatibility manifest |
 | `codex/` | Codex MCP configuration and workspace-preserving launchers |
-| `.github/` | CI workflow, Dependabot configuration, issue forms and PR template |
+| `.github/` | Issue forms and PR template |
 | `agents/` | Specialist design, review and test-writing roles |
 | `docs/` | Architecture, shared runtime behavior and operational limits |
 | `evals/` | Behavioral prompts, graders, fixtures and frozen-response judge tooling |
 | `hooks/` | Event registration, Bash launchers and Python hook implementation |
 | `mcp-server/` | Node.js MCP server, package metadata and dependency lockfile |
 | `runtime/` | Shared project discovery, build execution and local gate records |
+| `scripts/` | Offline installation diagnostics |
 | `skills/` | Task guidance in one `SKILL.md` per skill |
 | `tests/` | Deterministic regression suites and executable Java/Pact/Gatling examples |
 | `.gitignore` | Exclusions for local state, dependencies and generated artifacts |

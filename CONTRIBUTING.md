@@ -62,8 +62,34 @@ That check extracts code directly from skills, compiles it and runs smoke,
 Pact and local Gatling checks. These fixtures exercise examples and workflow;
 they do not certify a production provider, broker or performance target.
 
-The CI workflow runs deterministic tests on Linux/macOS and validates the
-examples in a Java job. It does not make behavioral model calls.
+GitHub Actions and automatic Dependabot updates are disabled for this
+repository. Run the applicable checks locally and record the commands,
+environment and results in the pull request. Linux results do not establish
+macOS compatibility; record platform coverage explicitly.
+
+The separate real-build check exercises pinned Maven 3.10.0 and Gradle 9.8.1
+fixtures through the shared runtime and host adapters:
+
+```bash
+bash tests/build-fixtures/check.sh
+```
+
+This requires those tools, JDK 25, installed MCP dependencies and access to
+dependency registries. Keep it separate from `tests/run-all.sh`, whose fixtures
+do not download application build dependencies. A fixture result validates
+the exercised workflow, not every application or build-tool version.
+
+## Dependency maintenance
+
+Automatic Dependabot updates are disabled because they execute through GitHub
+Actions. Retain the lockfile and audit the MCP dependencies locally:
+
+```bash
+npm audit --prefix mcp-server
+```
+
+Review npm and Maven dependency updates manually and run the affected checks.
+GitHub vulnerability alerts remain enabled independently of automatic updates.
 
 ## Behavioral evaluations
 
@@ -90,9 +116,10 @@ cover relevant input freshness, task/module/profile scope, failure/cancellation
 or cross-process coordination. Keep generated logs and evaluation reports out
 of commits.
 
-Open a pull request from a topic branch. `main` requires all five CI checks,
-resolved review conversations and an up-to-date branch. Merge with squash or
-rebase; completed topic branches are deleted automatically.
+Open a pull request from a topic branch. `main` requires a pull request and
+resolved review conversations, but no hosted status checks. Run local validation
+before merging and revalidate affected behavior after resolving conflicts.
+Merge with squash or rebase; completed topic branches are deleted automatically.
 
 Use Conventional Commits and a title that describes the final change. Mark
 breaking public tool/configuration changes explicitly. Test the plugin from a

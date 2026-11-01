@@ -99,7 +99,7 @@ test('registered components and shared runtime are consistent', () => {
   assert.equal(readdirSync(path.join(root, 'skills')).length, 16);
   assert.ok(!json('.claude-plugin/plugin.json').experimental?.monitors);
   const hooks = json('hooks/hooks.json').hooks;
-  assert.equal(Object.values(hooks).flatMap(entries => entries.flatMap(entry => entry.hooks)).length, 5);
+  assert.equal(Object.values(hooks).flatMap(entries => entries.flatMap(entry => entry.hooks)).length, 4);
   assert.ok(existsSync(path.join(root, 'runtime/project_runtime.py')));
   assert.match(read('hooks/scripts/hook-runtime.py'), /project_runtime/);
   assert.match(read('mcp-server/index.js'), /project_runtime/);

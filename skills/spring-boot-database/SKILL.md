@@ -12,7 +12,7 @@ description: >
 
 Guide for Flyway migrations, table design, JPA entities, naming conventions, and data-layer troubleshooting.
 
-> **Stack baseline:** Spring Boot 4.1 ships JPA 3.2 / Hibernate ORM 7. All JPA guidance below assumes that baseline.
+> Inspect the project database, schema, migration configuration and managed dependency versions first. The JPA 3.2 / Hibernate 7 and PostgreSQL examples below are conditional; adapt them to the actual project rather than changing its stack.
 
 ## Activation
 
@@ -48,15 +48,15 @@ src/main/resources/db/migration/
 V<version>__<short_description>.sql
 ```
 
-- Version: sequential integer, or ISO timestamp (`V20250401__...`).
+- Match configured Flyway prefixes, separator and locations. For default versioned SQL migrations, numeric versions may use dots or underscores; sequential integers and timestamps are common choices.
 - Double underscore `__` separator.
-- Description in snake_case, English.
+- Follow existing description conventions; snake_case English is an example, not an execution requirement. Repeatable migrations use the configured repeatable prefix (default `R__`).
 
 ### Writing rules
 
 - **Versioned migrations run once**: let unexpected schema differences fail instead of hiding them with `IF NOT EXISTS`. Use repeatable migrations deliberately for replaceable objects.
 - **Transactions depend on the database and SQL**. For PostgreSQL `CREATE INDEX CONCURRENTLY`, isolate the statement and add a sibling `V4__add_index.sql.conf` containing `executeInTransaction=false`. Configure PostgreSQL transactional locking appropriately for the selected Flyway version; test the migration on a representative database.
-- **Rollback**: by convention, rollback is done by creating an inverse migration (V+1__undo_<desc>.sql); it is not written in the same file.
+- **Recovery**: select a tested forward fix, restore, or compatible application rollback from the actual data and deployment constraints. An inverse migration is an option only when its data effects are understood; it cannot recover discarded data by itself.
 - **Applied versioned migrations are immutable**: retain their names and contents. Add a new versioned migration for every change. `repair` changes history metadata, not the schema; use it only after investigating and reconciling an explicitly understood failure, with backups and the same locations used by `migrate`.
 
 ### Example
@@ -98,12 +98,11 @@ If the application defines multiple persistence units, qualify the injection poi
 
 ### Conventions
 
-- `@Table(name = "users")` always in snake_case, plural.
-- `@Column(name = "email")` explicit name mapping.
-- Prefer `BigSerial` / `BIGINT` for PKs in large tables.
-- Use `TIMESTAMPTZ` instead of `TIMESTAMP`.
-- `BOOLEAN` → `Boolean` / `boolean`. Never `TINYINT`.
-- `JSONB` → Hibernate `@JdbcTypeCode(SqlTypes.JSON)`; `columnDefinition = "jsonb"` alone does not configure JSON serialization.
+- Preserve schema names and the configured naming strategy. Explicit `@Table` / `@Column` mappings are useful when defaults do not match; plural snake_case is only the example convention.
+- Choose identifier types from existing identity, scale and generation requirements; do not replace UUIDs or sequences to match the BIGSERIAL example.
+- Choose timestamp semantics from the domain and database. PostgreSQL `TIMESTAMPTZ` suits instants; local wall-clock values can need `TIMESTAMP`.
+- Map booleans to the actual database type and dialect; avoid a blanket type conversion across databases.
+- For PostgreSQL JSONB with a compatible Hibernate version, use `@JdbcTypeCode(SqlTypes.JSON)`; `columnDefinition = "jsonb"` alone does not configure JSON serialization.
 
 ### Embedded value objects
 
@@ -149,57 +148,9 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
 ## Database troubleshooting
 
-### Connection
-
-```bash
-# Direct connection test from the host with psql/pg_isready:
-pg_isready -h localhost -p 5432
-
-# Inspect the connection pool config in the app
-curl http://localhost:8080/actuator/env/spring.datasource.hikari.maximum-pool-size
-```
-
-### Failed migrations
-
-The Maven Flyway commands require a configured Flyway Maven plugin and database connection; the Boot starter alone does not configure CLI/plugin credentials. Do not print credentials in diagnostic output.
-
-```bash
-# Check migration status
-./mvnw flyway:info
-# Or if you're in prod
-flyway info
-
-# Investigate validation/history and restore the original applied script.
-# Apply corrections in a new migration; do not repair merely to silence a checksum mismatch.
-```
-
-### Locks and hung connections
-
-```sql
-SELECT pid, state, query_start, wait_event, query
-FROM pg_stat_activity
-WHERE state != 'idle'
-  AND query NOT ILIKE '%pg_stat%';
-```
-
-### Slow queries
-
-```yaml
-# Enable slow query logging in application-local.yml
-logging:
-  level:
-    org.hibernate.SQL: DEBUG
-    org.hibernate.stat: DEBUG
-```
-
-Better yet, keep `spring.jpa.show-sql: false` and use `pg_stat_statements` in PostgreSQL for production:
-
-```sql
-SELECT query, calls, total_exec_time / NULLIF(calls, 0) AS avg_ms
-FROM pg_stat_statements
-ORDER BY total_exec_time DESC
-LIMIT 10;
-```
+For connection failures, locks or slow queries, select the relevant diagnostic
+from [database troubleshooting](references/troubleshooting.md). Use the actual
+database and existing telemetry; do not run every example for a mapping change.
 
 ## References
 

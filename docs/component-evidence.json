@@ -1,0 +1,930 @@
+{
+  "schemaVersion": 1,
+  "task": "IMPL-E1",
+  "status": "offline-harness-and-coverage-inventory",
+  "effectivenessClaim": null,
+  "liveComparativeRuns": 0,
+  "originalCases": [
+    "applied-migration",
+    "bad-migration-name",
+    "boot4-tracing",
+    "codegen-controller",
+    "contract-release-cycle",
+    "cookie-bearer-security",
+    "gatling-profile",
+    "jwt-api",
+    "load-acceptance-cycle",
+    "migration-compatibility-gates",
+    "modulith-boundaries",
+    "no-hijack-generic-java",
+    "no-monitor-readiness",
+    "performance-evidence-first",
+    "postgres18-volume",
+    "pr-docs-selectivity",
+    "test-writer-behavior"
+  ],
+  "newUnrunCases": [
+    "initializr-positive",
+    "initializr-existing-project-refusal"
+  ],
+  "skillCount": 16,
+  "agentCount": 7,
+  "caseCount": 19,
+  "interpretation": [
+    "Coverage references are a map of relevant cases and test sources, not evidence those checks ran in this task.",
+    "Positive task relevance never proves activation, independent delegation, or effectiveness.",
+    "All automated selected-minus variants remove skills/agents only; hooks/MCP/runtime/LSP are not automatically ablated.",
+    "Deterministic tests and synthetic verdicts cannot establish marginal model usefulness or token/cost savings."
+  ],
+  "explicitOriginalActivationCriteria": [
+    "evals/bad-migration-name/graders/skill-fired.md",
+    "evals/codegen-controller/graders/skill-fired.md",
+    "evals/no-hijack-generic-java/graders/no-plugin-skill-fired.md"
+  ],
+  "sharedVerification": {
+    "authority": "runtime/project_runtime.py",
+    "principle": "Reuse equivalent successful verification of unchanged inputs; select optional specialists from the task rather than fixed fanout."
+  },
+  "harnessEvidence": [
+    "tests/evaluations/ablation_test.py",
+    "tests/evaluations/fixtures/two-arm-report.json",
+    "tests/evaluations/judge_test.py",
+    "tests/evaluations/fixture_test.py"
+  ],
+  "components": [
+    {
+      "id": "sb-pr-review",
+      "kind": "skill",
+      "path": "skills/sb-pr-review/SKILL.md",
+      "purpose": "Scope-based review selection and verification reuse",
+      "behavioralCases": {
+        "positiveTask": [
+          "pr-docs-selectivity"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain task-based optional delegation; measure reviewer cost."
+    },
+    {
+      "id": "spring-boot-3-to-4-migration",
+      "kind": "skill",
+      "path": "skills/spring-boot-3-to-4-migration/SKILL.md",
+      "purpose": "Staged compatibility and rollback evidence",
+      "behavioralCases": {
+        "positiveTask": [
+          "migration-compatibility-gates"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; migration task evidence is unmeasured."
+    },
+    {
+      "id": "spring-boot-api-contracts",
+      "kind": "skill",
+      "path": "skills/spring-boot-api-contracts/SKILL.md",
+      "purpose": "Client-visible contracts and compatibility",
+      "behavioralCases": {
+        "positiveTask": [
+          "codegen-controller"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/examples/extract.py",
+        "tests/examples/check.sh"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Measure direct contract design; controller case is adjacent."
+    },
+    {
+      "id": "spring-boot-build-run",
+      "kind": "skill",
+      "path": "skills/spring-boot-build-run/SKILL.md",
+      "purpose": "Shared runtime discovery and coordinated verification",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [
+          "no-monitor-readiness"
+        ],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain shared runtime; add direct build behavior experiment later."
+    },
+    {
+      "id": "spring-boot-ci",
+      "kind": "skill",
+      "path": "skills/spring-boot-ci/SKILL.md",
+      "purpose": "Release gates and publication boundaries",
+      "behavioralCases": {
+        "positiveTask": [
+          "contract-release-cycle"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Existing contract case only indirectly covers CI implementation."
+    },
+    {
+      "id": "spring-boot-codegen",
+      "kind": "skill",
+      "path": "skills/spring-boot-codegen/SKILL.md",
+      "purpose": "Framework-specific endpoint generation",
+      "behavioralCases": {
+        "positiveTask": [
+          "codegen-controller"
+        ],
+        "negativeTask": [
+          "no-hijack-generic-java"
+        ],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; project conventions override example layers."
+    },
+    {
+      "id": "spring-boot-contract-testing",
+      "kind": "skill",
+      "path": "skills/spring-boot-contract-testing/SKILL.md",
+      "purpose": "Independent consumer/provider compatibility gates",
+      "behavioralCases": {
+        "positiveTask": [
+          "contract-release-cycle"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/examples/extract.py",
+        "tests/examples/check.sh"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; separate local examples from real broker/deployment evidence."
+    },
+    {
+      "id": "spring-boot-database",
+      "kind": "skill",
+      "path": "skills/spring-boot-database/SKILL.md",
+      "purpose": "Applied migration safety and database-aware mapping",
+      "behavioralCases": {
+        "positiveTask": [
+          "applied-migration",
+          "bad-migration-name"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; naming/type choices conditional on schema and engine."
+    },
+    {
+      "id": "spring-boot-docker",
+      "kind": "skill",
+      "path": "skills/spring-boot-docker/SKILL.md",
+      "purpose": "Container lifecycle and persistent image-specific layout",
+      "behavioralCases": {
+        "positiveTask": [
+          "postgres18-volume"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; broaden actual container workflow evidence later."
+    },
+    {
+      "id": "spring-boot-initializr",
+      "kind": "skill",
+      "path": "skills/spring-boot-initializr/SKILL.md",
+      "purpose": "Explicit guarded scaffolding using official metadata",
+      "behavioralCases": {
+        "positiveTask": [
+          "initializr-positive"
+        ],
+        "negativeTask": [
+          "initializr-existing-project-refusal"
+        ],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/initialization/test_initializer.py",
+        "tests/mcp/initialization.test.js"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Two new cases unrun; missing capability never counts as positive success."
+    },
+    {
+      "id": "spring-boot-load-testing",
+      "kind": "skill",
+      "path": "skills/spring-boot-load-testing/SKILL.md",
+      "purpose": "Open workloads and evidence-based acceptance",
+      "behavioralCases": {
+        "positiveTask": [
+          "gatling-profile",
+          "load-acceptance-cycle"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/examples/extract.py",
+        "tests/examples/check.sh"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain opt-in execution; sample code does not prove service performance."
+    },
+    {
+      "id": "spring-boot-modulith",
+      "kind": "skill",
+      "path": "skills/spring-boot-modulith/SKILL.md",
+      "purpose": "Executable in-process module boundary verification",
+      "behavioralCases": {
+        "positiveTask": [
+          "modulith-boundaries"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/examples/extract.py",
+        "tests/examples/check.sh"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Narrow to justified Modulith tasks; no universal adoption."
+    },
+    {
+      "id": "spring-boot-observability",
+      "kind": "skill",
+      "path": "skills/spring-boot-observability/SKILL.md",
+      "purpose": "Real tracing APIs, logs and readiness diagnosis",
+      "behavioralCases": {
+        "positiveTask": [
+          "boot4-tracing",
+          "no-monitor-readiness"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/examples/extract.py",
+        "tests/examples/check.sh"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; no automatic monitoring promise."
+    },
+    {
+      "id": "spring-boot-performance",
+      "kind": "skill",
+      "path": "skills/spring-boot-performance/SKILL.md",
+      "purpose": "Measurement before tuning",
+      "behavioralCases": {
+        "positiveTask": [
+          "performance-evidence-first"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; no speedup claim without comparable measurements."
+    },
+    {
+      "id": "spring-boot-security-hardening",
+      "kind": "skill",
+      "path": "skills/spring-boot-security-hardening/SKILL.md",
+      "purpose": "Spring Security APIs and mixed cookie/bearer CSRF",
+      "behavioralCases": {
+        "positiveTask": [
+          "jwt-api",
+          "cookie-bearer-security"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/examples/extract.py",
+        "tests/examples/check.sh"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; use actual application security boundaries."
+    },
+    {
+      "id": "spring-boot-testing",
+      "kind": "skill",
+      "path": "skills/spring-boot-testing/SKILL.md",
+      "purpose": "Observable security/persistence/wire test boundaries",
+      "behavioralCases": {
+        "positiveTask": [
+          "test-writer-behavior"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs",
+        "tests/evaluations/fixture_test.py"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Retain; existing assertion/naming/fixture style takes precedence."
+    },
+    {
+      "id": "sb-api-designer",
+      "kind": "agent",
+      "path": "agents/sb-api-designer.md",
+      "purpose": "API-only contract ownership",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": [
+          "codegen-controller"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Direct design and false-activation cases missing."
+    },
+    {
+      "id": "sb-architect",
+      "kind": "agent",
+      "path": "agents/sb-architect.md",
+      "purpose": "Domain/design tradeoffs without implementation edits",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": [
+          "modulith-boundaries"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Direct design case missing; removed fixed Java/Boot/model mandates."
+    },
+    {
+      "id": "sb-code-reviewer",
+      "kind": "agent",
+      "path": "agents/sb-code-reviewer.md",
+      "purpose": "Evidence-backed changed-path correctness review",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [
+          "pr-docs-selectivity"
+        ],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Positive reviewer quality/invocation case missing."
+    },
+    {
+      "id": "sb-docker-reviewer",
+      "kind": "agent",
+      "path": "agents/sb-docker-reviewer.md",
+      "purpose": "Read-only delivery and persistence review",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [
+          "pr-docs-selectivity"
+        ],
+        "indirect": [
+          "postgres18-volume"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Compose generation is indirect; reviewer marginal value unmeasured."
+    },
+    {
+      "id": "sb-migration-reviewer",
+      "kind": "agent",
+      "path": "agents/sb-migration-reviewer.md",
+      "purpose": "Read-only migration compatibility and history review",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": [
+          "applied-migration",
+          "bad-migration-name"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Migration advice does not prove agent invocation."
+    },
+    {
+      "id": "sb-runtime-reviewer",
+      "kind": "agent",
+      "path": "agents/sb-runtime-reviewer.md",
+      "purpose": "Read-only transactions, concurrency and query paths",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [
+          "pr-docs-selectivity"
+        ],
+        "indirect": [
+          "performance-evidence-first"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Direct runtime review/invocation cases missing."
+    },
+    {
+      "id": "sb-test-writer",
+      "kind": "agent",
+      "path": "agents/sb-test-writer.md",
+      "purpose": "Risk-driven test sources within test-only ownership",
+      "behavioralCases": {
+        "positiveTask": [
+          "test-writer-behavior"
+        ],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": true,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Relevant task case does not prove specialist delegation occurred."
+    },
+    {
+      "id": "initialize_project",
+      "kind": "mcp-tool",
+      "path": "mcp-server/index.js",
+      "purpose": "Guarded Initializr generation",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": [
+          "initializr-positive",
+          "initializr-existing-project-refusal"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/initialization/test_initializer.py",
+        "tests/mcp/initialization.test.js"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic paths do not establish model tool selection or marginal usefulness. No automated tool ablation."
+    },
+    {
+      "id": "analyze_project",
+      "kind": "mcp-tool",
+      "path": "mcp-server/index.js",
+      "purpose": "Shared project/dependency discovery",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/project-runtime/regressions.py",
+        "tests/mcp/source-inspection-regression.test.js"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic paths do not establish model tool selection or marginal usefulness. No automated tool ablation."
+    },
+    {
+      "id": "run_build",
+      "kind": "mcp-tool",
+      "path": "mcp-server/index.js",
+      "purpose": "Coordinated finite build execution",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/project-runtime/regressions.py",
+        "tests/mcp/runtime-safety-regression.test.js"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic paths do not establish model tool selection or marginal usefulness. No automated tool ablation."
+    },
+    {
+      "id": "run_tests",
+      "kind": "mcp-tool",
+      "path": "mcp-server/index.js",
+      "purpose": "Fresh scoped report collection",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/project-runtime/regressions.py",
+        "tests/mcp/runtime-safety-regression.test.js"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic paths do not establish model tool selection or marginal usefulness. No automated tool ablation."
+    },
+    {
+      "id": "check_migrations",
+      "kind": "mcp-tool",
+      "path": "mcp-server/index.js",
+      "purpose": "Local SQL/migration lint and explicit Flyway status",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": [
+          "bad-migration-name",
+          "applied-migration"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/project-runtime/sql-regressions.py",
+        "tests/mcp/sql-lint-regression.test.js"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic paths do not establish model tool selection or marginal usefulness. No automated tool ablation."
+    },
+    {
+      "id": "openapi_endpoints",
+      "kind": "mcp-tool",
+      "path": "mcp-server/index.js",
+      "purpose": "Static/runtime API inspection",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/mcp/server.test.js",
+        "tests/mcp/source-inspection-regression.test.js"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic paths do not establish model tool selection or marginal usefulness. No automated tool ablation."
+    },
+    {
+      "id": "actuator_health",
+      "kind": "mcp-tool",
+      "path": "mcp-server/index.js",
+      "purpose": "Explicit health/readiness/liveness inspection",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": [
+          "no-monitor-readiness"
+        ]
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/mcp/server.test.js"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic paths do not establish model tool selection or marginal usefulness. No automated tool ablation."
+    },
+    {
+      "id": "guard-secrets",
+      "kind": "hook",
+      "path": "hooks/scripts/guard-secrets.sh",
+      "purpose": "Claude hook guard/verification workflow",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/guard-secrets/test-basic.sh",
+        "tests/hook-regressions.py"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "No automated hook ablation; model overhead and workflow benefit unmeasured."
+    },
+    {
+      "id": "guard-ddl",
+      "kind": "hook",
+      "path": "hooks/scripts/guard-ddl.sh",
+      "purpose": "Claude hook guard/verification workflow",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/guard-ddl/test-basic.sh",
+        "tests/hook-regressions.py"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "No automated hook ablation; model overhead and workflow benefit unmeasured."
+    },
+    {
+      "id": "lint-migration",
+      "kind": "hook",
+      "path": "hooks/scripts/lint-migration.sh",
+      "purpose": "Claude hook guard/verification workflow",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/lint-migration/test-basic.sh",
+        "tests/hook-regressions.py"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "No automated hook ablation; model overhead and workflow benefit unmeasured."
+    },
+    {
+      "id": "verify-on-stop",
+      "kind": "hook",
+      "path": "hooks/scripts/verify-on-stop.sh",
+      "purpose": "Claude hook guard/verification workflow",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/verify-on-stop/test-basic.sh",
+        "tests/hook-regressions.py"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "No automated hook ablation; model overhead and workflow benefit unmeasured."
+    },
+    {
+      "id": "shared-runtime",
+      "kind": "runtime",
+      "path": "runtime/project_runtime.py",
+      "purpose": "Authoritative discovery and coordinated execution",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/project-runtime/regressions.py",
+        "tests/build-fixtures/check.sh"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic runtime/real-build fixtures are separate from model usefulness."
+    },
+    {
+      "id": "install-doctor",
+      "kind": "utility",
+      "path": "scripts/install-doctor.py",
+      "purpose": "Offline installation diagnostics",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/install-doctor/test_doctor.py"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Deterministic doctor tests cover installation checks; no behavioral/model usefulness result."
+    },
+    {
+      "id": "claude-adapter",
+      "kind": "adapter",
+      "path": ".claude-plugin/plugin.json",
+      "purpose": "Claude product registration",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Only host covered by the preparation harness; version pinned per plan."
+    },
+    {
+      "id": "codex-adapter",
+      "kind": "adapter",
+      "path": "codex/mcp.json",
+      "purpose": "Codex MCP/skill adapter",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/codex/adapter.test.mjs",
+        "tests/codex/cli-smoke.py"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Excluded from Claude snapshot; requires separate actual host verification and usefulness experiment."
+    },
+    {
+      "id": "java-lsp",
+      "kind": "lsp",
+      "path": ".lsp.json",
+      "purpose": "Optional external Java language server registration",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/repository/packaging.test.mjs"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "Manifest validation cannot prove installed server or editor behavior. No automated LSP ablation."
+    }
+  ]
+}
