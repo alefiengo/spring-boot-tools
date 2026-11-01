@@ -9,7 +9,7 @@
       "name": "spring-boot-tools",
       "source": "./",
       "description": "Spring Boot toolkit: 16 skills, 7 MCP tools including safe project initialization, 7 Claude agents, 4 Claude hooks, optional Java LSP, and a Codex adapter.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": {
         "name": "alefiengo"
       },

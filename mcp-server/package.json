@@ -1,6 +1,6 @@
 {
   "name": "mcp-spring-boot",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Seven Spring-aware MCP tools with shared project discovery and coordinated Maven/Gradle builds",
   "type": "module",
