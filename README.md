@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A plugin for developing and reviewing Spring Boot applications with Claude Code and Codex.
-It provides 16 shared skills and seven MCP tools. Claude Code additionally loads seven specialist agents and five hooks.
+It provides 16 shared skills and seven MCP tools. Claude Code additionally loads seven specialist agents and four hooks.
 Build execution and verification share one runtime so hooks and tools can
 coordinate their work.
 
@@ -134,7 +134,7 @@ need no application build or application reviewers.
 
 | Tool | Responsibility |
 |---|---|
-| `initialize_project` | Generate a new project through Spring Initializr into a safe empty directory; refuse existing projects |
+| `initialize_project` | Generate a project through Spring Initializr into an absent target; refuse existing project contexts and targets |
 | `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings |
 | `run_build` | Execute controlled Maven/Gradle tasks with module/profile scope |
 | `run_tests` | Run tests and summarize fresh XML reports and failures |
@@ -152,7 +152,6 @@ configured database inspection provide additional evidence when requested.
 | `guard-secrets` | Before Write/Edit | Inspect proposed configuration for hard-coded credentials |
 | `guard-ddl` | Before Write/Edit | Reject destructive Hibernate schema settings outside recognized development configuration |
 | `lint-migration` | After Write/Edit | Check migration names and flag destructive SQL |
-| `post-edit-compile` | After Write/Edit | Record relevant edits for batched verification |
 | `verify-on-stop` | Stop | Run or reuse an equivalent successful Maven verify / Gradle check |
 
 Verification reuse requires matching project inputs, task, module and
@@ -160,6 +159,10 @@ profiles. Failed/cancelled builds and compile/test-only results cannot satisfy
 a full verification gate. Explicit reruns can force execution. The shared
 runtime serializes plugin builds for a project and captures test reports
 inside that lock.
+
+The former `post-edit-compile` marker hook has been removed: Stop and MCP
+verification inspect current fingerprints directly, including edits made
+outside the host's Write/Edit tools. No compilation runs after every edit.
 
 ## Repository layout
 

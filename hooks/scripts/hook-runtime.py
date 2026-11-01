@@ -56,7 +56,8 @@ def proposed(data, path):
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'runtime'))
-from project_runtime import discover, mark_pending, run_build, relevant, BuildCancelled
+from project_runtime import discover, run_build, BuildCancelled
+from sql_lint import lint_hook
 
 
 
@@ -198,16 +199,10 @@ def ddl(data, path):
 def build(event, data, path):
     if event == 'Stop' and data.get('stop_hook_active'):
         return
-    location = path if event == 'PostToolUse' else Path(os.environ.get('CLAUDE_PROJECT_DIR') or data.get('cwd') or os.getcwd())
+    location = Path(os.environ.get('CLAUDE_PROJECT_DIR') or data.get('cwd') or os.getcwd())
     try:
         info = discover(location)
     except ValueError:
-        return
-    if event == 'PostToolUse':
-        # Batch edits: record pending work, never launch a build for each keystroke.
-        # Stop hashes current sources/configuration and checks edits from any source.
-        if relevant(path.resolve(), Path(info['root'])):
-            mark_pending(info['root'])
         return
     try:
         result = run_build({'projectRoot': info['root'], 'task': 'verify'}, own_process_group=True)
@@ -225,16 +220,7 @@ def build(event, data, path):
 def lint(data, path):
     if path.suffix != '.sql' or not any(path.parts[i:i+2] == ('db', 'migration') for i in range(len(path.parts)-1)) or not path.is_file():
         return
-    messages = []
-    # Flyway supports dotted/underscored versions, repeatable scripts and undo scripts.
-    if not re.fullmatch(r'(?:[VU]\d+(?:[._]\d+)*|R)__[^/]+\.sql', path.name):
-        messages.append('naming: expected V<version>__<description>.sql, U<version>__<description>.sql or R__<description>.sql')
-    text = path.read_text()
-    sql = re.sub(r'/\*.*?\*/|--[^\n]*', '', text, flags=re.S)
-    if re.search(r'\bBEGIN\b', sql, re.I) and re.search(r'\bCOMMIT\b', sql, re.I) and re.search(r'\bFOR\b[^;]*\bLOOP\b', sql, re.I):
-        messages.append('BEGIN/COMMIT with LOOP: verify transaction handling is intentional')
-    if re.search(r'\b(?:DROP\s+(?:TABLE|COLUMN)|TRUNCATE\s+(?:TABLE\s+)?|DELETE\s+FROM)\b', sql, re.I):
-        messages.append('Destructive SQL: IF EXISTS does not protect data. Review backups, dependencies and rollback before applying. Never edit an already applied migration; add a new migration.')
+    messages = lint_hook(path.name, path.read_text())
     if messages:
         emit('PostToolUse', f'{path.name}: ' + '\n'.join(messages))
 
@@ -256,8 +242,6 @@ def main():
             secrets(data, path)
         elif action == 'guard-ddl':
             ddl(data, path)
-        elif action == 'post-edit-compile':
-            build('PostToolUse', data, path)
         elif action == 'lint-migration':
             lint(data, path)
 

@@ -1,0 +1,448 @@
+[
+  {
+    "id": "create",
+    "name": "V1__create.sql",
+    "sql": "CREATE TABLE users (id bigint);",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "dotted",
+    "name": "V001.02_000__dotted.sql",
+    "sql": "SELECT 1;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1.2"
+    }
+  },
+  {
+    "id": "undo",
+    "name": "U01_2__undo.sql",
+    "sql": "DROP TABLE IF EXISTS users;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "U",
+      "version": "1.2"
+    }
+  },
+  {
+    "id": "repeatable",
+    "name": "R__refresh view.sql",
+    "sql": "CREATE OR REPLACE VIEW users AS SELECT 1;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "R",
+      "version": null
+    }
+  },
+  {
+    "id": "invalid",
+    "name": "bad.sql",
+    "sql": "DROP TABLE users;",
+    "hook": [
+      "naming",
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [
+        "naming"
+      ],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": null,
+      "version": null
+    }
+  },
+  {
+    "id": "empty",
+    "name": "V1__empty.sql",
+    "sql": "  \n\t",
+    "hook": [],
+    "mcp": {
+      "errors": [
+        "empty"
+      ],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "bom-empty",
+    "name": "V1__bom-empty.sql",
+    "sql": "﻿",
+    "hook": [],
+    "mcp": {
+      "errors": [
+        "empty"
+      ],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "comments",
+    "name": "V1__comments.sql",
+    "sql": "-- DROP TABLE users;\n/* DELETE FROM users; BEGIN FOR x LOOP COMMIT; */ SELECT 1;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "quoted",
+    "name": "V1__quoted.sql",
+    "sql": "SELECT 'DROP TABLE users; DELETE FROM users;';",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "escaped-quote",
+    "name": "V1__escaped-quote.sql",
+    "sql": "SELECT 'it''s DROP TABLE users';",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "quoted-comment",
+    "name": "V1__quoted-comment.sql",
+    "sql": "SELECT '-- harmless'; DROP TABLE users;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "drop-column",
+    "name": "V1__drop-column.sql",
+    "sql": "ALTER TABLE users DROP COLUMN email;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "drop-index",
+    "name": "V1__drop-index.sql",
+    "sql": "DROP INDEX users_idx;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "drop-schema",
+    "name": "V1__drop-schema.sql",
+    "sql": "DROP SCHEMA old;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "drop-database",
+    "name": "V1__drop-database.sql",
+    "sql": "DROP DATABASE old;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "truncate",
+    "name": "V1__truncate.sql",
+    "sql": "TRUNCATE users;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "truncate-bare",
+    "name": "V1__truncate-bare.sql",
+    "sql": "TRUNCATE;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "delete",
+    "name": "V1__delete.sql",
+    "sql": "DELETE FROM users;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "unbounded-delete"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "bounded-delete",
+    "name": "V1__bounded-delete.sql",
+    "sql": "DELETE FROM users WHERE id = 1;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "two-deletes",
+    "name": "V1__two-deletes.sql",
+    "sql": "DELETE FROM users; DELETE FROM roles WHERE id = 1; DELETE FROM teams;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "unbounded-delete",
+        "unbounded-delete"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "quoted-where",
+    "name": "V1__quoted-where.sql",
+    "sql": "DELETE FROM users RETURNING 'WHERE';",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "unbounded-delete"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "loop",
+    "name": "V1__loop.sql",
+    "sql": "BEGIN; FOR item IN SELECT 1 LOOP; END LOOP; COMMIT;",
+    "hook": [
+      "loop"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "quoted-loop",
+    "name": "V1__quoted-loop.sql",
+    "sql": "SELECT 'BEGIN FOR item LOOP COMMIT';",
+    "hook": [
+      "loop"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "joined-comment",
+    "name": "V1__joined-comment.sql",
+    "sql": "DR/* note */OP TABLE users;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "unicode-name",
+    "name": "V١__unicode.sql",
+    "sql": "SELECT 1;",
+    "hook": [],
+    "mcp": {
+      "errors": [
+        "naming"
+      ],
+      "risks": [],
+      "type": null,
+      "version": null
+    }
+  },
+  {
+    "id": "big-version",
+    "name": "V999999999999999999999999999999__large.sql",
+    "sql": "SELECT 1;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "999999999999999999999999999999"
+    }
+  },
+  {
+    "id": "nbsp-drop",
+    "name": "V1__nbsp-drop.sql",
+    "sql": "DROP TABLE users;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "nbsp-delete",
+    "name": "V1__nbsp-delete.sql",
+    "sql": "DELETE FROM users;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "unbounded-delete"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "bom-drop",
+    "name": "V1__bom-drop.sql",
+    "sql": "DROP﻿TABLE users;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "next-line-drop",
+    "name": "V1__next-line-drop.sql",
+    "sql": "DROPTABLE users;",
+    "hook": [
+      "destructive"
+    ],
+    "mcp": {
+      "errors": [],
+      "risks": [],
+      "type": "V",
+      "version": "1"
+    }
+  },
+  {
+    "id": "ascii-boundary",
+    "name": "V1__ascii-boundary.sql",
+    "sql": "éDROP TABLE users;",
+    "hook": [],
+    "mcp": {
+      "errors": [],
+      "risks": [
+        "destructive-sql"
+      ],
+      "type": "V",
+      "version": "1"
+    }
+  }
+]

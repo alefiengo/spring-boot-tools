@@ -58,8 +58,8 @@ scope. Use a root test invocation to collect the whole reactor's reports.
 
 ## Verification reuse
 
-Post-edit hooks record relevant changes without launching a build for each
-file. The Stop hook requests Maven `verify` or Gradle `check`. MCP and PR review
+The Stop hook requests Maven `verify` or Gradle `check` against current input
+fingerprints. No post-edit marker or build is required. MCP and PR review
 can share a completed equivalent verification gate.
 
 Reuse requires successful full verification with unchanged inputs and matching
@@ -79,6 +79,15 @@ Source inventories use literal configuration, dependency declarations,
 annotations and SQL. Parent builds, catalogs, computed routes and runtime
 configuration can provide information unavailable to static inspection.
 Unknown evidence should stay unknown.
+
+SQL heuristics live in `runtime/sql_lint.py`. The edit hook uses its immediate
+warning policy; MCP uses its inventory/error/risk policy through the runtime
+bridge. Their deliberately different DELETE and string-handling policies are
+characterized with one shared corpus. Neither policy proves database safety.
+
+The legacy runtime CLI action `mark` returns project discovery plus a
+deprecation diagnostic without writing state. Old pending-marker files are
+ignored; successful verification reuse depends only on scope and fingerprints.
 
 Runtime OpenAPI and Actuator inspection use explicit URLs and report access,
 endpoint and application failures separately. Migration database status

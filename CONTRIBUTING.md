@@ -65,6 +65,18 @@ they do not certify a production provider, broker or performance target.
 The CI workflow runs deterministic tests on Linux/macOS and validates the
 examples in a Java job. It does not make behavioral model calls.
 
+The separate real-build job exercises pinned Maven 3.10.0 and Gradle 9.8.1
+fixtures through the shared runtime and host adapters:
+
+```bash
+bash tests/build-fixtures/check.sh
+```
+
+This requires those tools, JDK 25, installed MCP dependencies and access to
+dependency registries. Keep it separate from `tests/run-all.sh`, whose fixtures
+do not download application build dependencies. A fixture result validates
+the exercised workflow, not every application or build-tool version.
+
 ## Behavioral evaluations
 
 Evaluations use a logged-in Claude Code account, make paid model calls and

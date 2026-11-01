@@ -171,24 +171,12 @@ async function checkMigrations(args, ctx) {
   if (selectedModule && !project.modules.some(m => m.path === selectedModule)) throw new Error("module must match a discovered module path");
   const scanRoot = selectedModule ? project.modules.find(m => m.path === selectedModule).root : root;
   const files = (await walk(scanRoot)).filter(f => /(?:^|[/\\])src[/\\]main[/\\]resources[/\\]db[/\\]migration[/\\][^/\\]+\.sql$/.test(f));
-  const migrations = [], errors = [], risks = [], groups = new Map();
+  const records = [];
   for (const file of files) {
-    const relative = path.relative(root, file), name = path.basename(file), match = name.match(/^(?:([VU])(\d+(?:[._]\d+)*)|R)__([^/]+)\.sql$/);
-    const location = path.relative(root, path.dirname(file)), content = await fs.readFile(file, "utf-8");
-    if (!match) errors.push({ file: relative, code: "naming", message: "Expected V/U<version>__description.sql or R__description.sql." });
-    if (!content.trim()) errors.push({ file: relative, code: "empty", message: "Empty migration." });
-    let version = match?.[2]?.split(/[._]/).map(n => BigInt(n).toString());
-    while (version?.length > 1 && version.at(-1) === "0") version.pop();
-    const normalizedVersion = version?.join(".") || null;
-    migrations.push({ file: relative, location, type: match?.[1] || (match ? "R" : null), version: normalizedVersion });
-    if (normalizedVersion) {
-      const key = `${location}:${match[1]}:${normalizedVersion}`;
-      if (groups.has(key)) errors.push({ file: relative, code: "duplicate-version", message: `Equivalent version to ${groups.get(key)}`, version: normalizedVersion }); else groups.set(key, relative);
-    }
-    const sql = content.replace(/\/\*[\s\S]*?\*\/|--[^\n]*|'(?:''|[^'])*'/g, " ");
-    if (/\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|INDEX|COLUMN)|TRUNCATE(?:\s+TABLE)?)\b/i.test(sql)) risks.push({ file: relative, code: "destructive-sql", message: "DROP/TRUNCATE requires data-loss and lock review." });
-    for (const statement of sql.split(";")) if (/\bDELETE\s+FROM\b/i.test(statement) && !/\bWHERE\b/i.test(statement)) risks.push({ file: relative, code: "unbounded-delete", message: "DELETE without WHERE requires explicit data-loss review." });
+    records.push({ file: path.relative(root, file), name: path.basename(file),
+      location: path.relative(root, path.dirname(file)), content: await fs.readFile(file, "utf-8") });
   }
+  const { migrations, errors, risks } = await runtime({ action: "lint-migrations", migrations: records }, ctx);
   migrations.sort((a, b) => a.location.localeCompare(b.location) || compareVersions(a.version, b.version) || a.file.localeCompare(b.file));
   return textResult({ mode: "lint", databaseAccess: false, migrations, errors, risks, ordering: "Numeric version order per source location; repeatable migrations follow versioned migrations. Source locations may be merged by runtime Flyway configuration; cross-location duplicates require effective configuration.", limitation: "SQL lint does not prove migration safety or applied-state immutability." }, errors.length > 0);
 }

@@ -10,6 +10,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTION = sys.argv.pop(1)
+SQL_MESSAGES = {
+    'naming': 'naming: expected V<version>__<description>.sql, U<version>__<description>.sql or R__<description>.sql',
+    'loop': 'BEGIN/COMMIT with LOOP: verify transaction handling is intentional',
+    'destructive': 'Destructive SQL: IF EXISTS does not protect data. Review backups, dependencies and rollback before applying. Never edit an already applied migration; add a new migration.',
+}
 
 class HookTests(unittest.TestCase):
     def setUp(self):
@@ -102,32 +107,21 @@ class HookTests(unittest.TestCase):
         path.write_text('ddl-auto: none')
         self.deny(self.invoke(path, tool_input={'old_string':'none', 'new_string':'update'}))
 
-    def test_compile(self):
-        if ACTION != 'post-edit-compile': self.skipTest('other hook')
+    def test_stop_batches_edits_without_pending_markers(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
         self.wrapper()
         file = self.root/'src/main/java/com/example/App.java'
         file.parent.mkdir(parents=True)
-        file.write_text('class App {}')
-        for _ in range(3):
-            self.assertIsNone(self.invoke(file))
+        for index in range(3):
+            file.write_text('class App { int value = ' + str(index) + '; }')
         self.assertFalse((self.root/'target/calls').exists())
-        self.assertIsNone(self.invoke(action='verify-on-stop'))
+        self.assertIsNone(self.invoke())
         self.assertEqual((self.root/'target/calls').read_text().splitlines(), ['-B -ntp verify'])
-        self.assertIsNone(self.invoke(file))
-        self.assertIsNone(self.invoke(action='verify-on-stop'))
+        self.assertIsNone(self.invoke())
         self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 1)
         file.write_text('class App { int changed; }')
-        self.assertIsNone(self.invoke(file))
-        self.assertIsNone(self.invoke(action='verify-on-stop'))
+        self.assertIsNone(self.invoke())
         self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 2)
-
-    def test_compile_gradle(self):
-        if ACTION != 'post-edit-compile': self.skipTest('other hook')
-        self.wrapper(gradle=True)
-        self.assertIsNone(self.invoke(self.root/'src/test/java/com/demo/Test.java'))
-        self.assertFalse((self.root/'target/calls').exists())
-        self.assertIsNone(self.invoke(action='verify-on-stop'))
-        self.assertEqual((self.root/'target/calls').read_text(), '--console=plain --no-daemon check\n')
 
     def test_verify(self):
         if ACTION != 'verify-on-stop': self.skipTest('other hook')
@@ -227,13 +221,29 @@ class HookTests(unittest.TestCase):
         (other/'bad.sql').write_text('DROP TABLE users;')
         self.assertIsNone(self.invoke(other/'bad.sql'))
 
+    def test_sql_policy_corpus(self):
+        if ACTION != 'lint-migration': self.skipTest('other hook')
+        directory = self.root/'db/migration'
+        directory.mkdir(parents=True)
+        corpus = json.loads((ROOT/'tests/project-runtime/sql-corpus.json').read_text())
+        for case in corpus:
+            with self.subTest(case=case['id']):
+                path = directory/case['name']
+                path.write_text(case['sql'])
+                output = self.invoke(path)
+                if case['hook']:
+                    message = self.context(output)
+                    expected = [SQL_MESSAGES[code] for code in case['hook']]
+                    self.assertEqual(message, path.name + ': ' + '\n'.join(expected))
+                else:
+                    self.assertIsNone(output)
+
 if __name__ == '__main__':
     methods = {
         'guard-secrets': ['test_secret'],
         'guard-ddl': ['test_ddl'],
-        'post-edit-compile': ['test_compile', 'test_compile_gradle'],
-        'verify-on-stop': ['test_verify', 'test_verify_maven', 'test_mcp_verification_reused_by_stop', 'test_source_packages_named_build_target_docs', 'test_stop_sigterm_kills_child_session'],
-        'lint-migration': ['test_lint'],
+        'verify-on-stop': ['test_stop_batches_edits_without_pending_markers', 'test_verify', 'test_verify_maven', 'test_mcp_verification_reused_by_stop', 'test_source_packages_named_build_target_docs', 'test_stop_sigterm_kills_child_session'],
+        'lint-migration': ['test_lint', 'test_sql_policy_corpus'],
     }
     result = unittest.TextTestRunner().run(unittest.TestSuite(HookTests(name) for name in ['test_diagnostics', *methods[ACTION]]))
     sys.exit(not result.wasSuccessful())
