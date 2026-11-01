@@ -103,6 +103,18 @@ Configure `app_port` through the plugin configuration. It defaults to 8080
 and supplies the default application port for Actuator inspection. Project
 build files determine the build tool and dependency versions.
 
+## Update to v0.3.0
+
+See the [v0.3.0 release](https://github.com/alefiengo/spring-boot-tools/releases/tag/v0.3.0)
+for installation diagnostics, shared migration lint and evaluation tooling.
+The former `post-edit-compile` hook is removed; Stop verification still checks
+current inputs, including external edits. Codex verification remains explicit.
+
+Update your installed plugin and restart the host so it reloads the manifests
+and MCP server. Run `npm ci` in the installed `mcp-server/` directory, then use
+the installation doctor above to check the bundle and workspace. Do not copy
+hook registrations from an older version into the updated installation.
+
 ## Skills
 
 Claude selects skills from their descriptions and the request context. Each
@@ -223,5 +235,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for validation and development,
 The project is licensed under the [MIT license](LICENSE).
 
 See the [changelog](CHANGELOG.md) for release changes and compatibility notes,
+the [release procedure](docs/releases.md) for publication and local evidence,
 and the [audit report](docs/audit-2026-10-31.md) for findings, validation and
 remaining coverage limits.

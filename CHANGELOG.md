@@ -1,11 +1,10 @@
 # Changelog
 
-## Unreleased
+## [0.3.0](https://github.com/alefiengo/spring-boot-tools/compare/v0.2.0...v0.3.0)
 
 - Remove repository GitHub Actions workflows, the CI badge and automatic
   Dependabot updates. Use documented local validation and dependency audits;
   `main` no longer requires hosted status checks.
-
 - Remove the unused post-edit pending-marker hook; Stop verification still
   fingerprints current inputs and the legacy `mark` action returns a
   deprecation diagnostic without writing state.
@@ -21,6 +20,11 @@
 
 Live comparative model results are not included. Component effectiveness remains
 unmeasured until explicitly budgeted runs are completed.
+
+Compatibility: the former `post-edit-compile` hook is no longer registered.
+Stop still detects external edits through current fingerprints; the legacy
+`mark` runtime action is deprecated and writes no state. Codex verification
+remains explicit. The MCP tool catalog and host prerequisites are unchanged.
 
 ## [0.2.0](https://github.com/alefiengo/spring-boot-tools/compare/v0.1.0...v0.2.0)
 
