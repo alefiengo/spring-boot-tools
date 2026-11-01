@@ -84,7 +84,7 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.fixture = tempfile.TemporaryDirectory()
         self.addCleanup(self.fixture.cleanup)
-        self.root = Path(self.fixture.name)
+        self.root = Path(self.fixture.name).resolve()
         (self.root / 'target').mkdir()
         (self.root / 'pom.xml').write_text('<project/>')
         (self.root / 'src/main/java').mkdir(parents=True)

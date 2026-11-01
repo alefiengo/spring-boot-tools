@@ -9,7 +9,7 @@ const http = require('node:http');
 const entry = path.resolve(__dirname, '../../mcp-server/index.js');
 
 async function fixture(t, files, env = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-regression-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-regression-')));
   for (const [name, content] of Object.entries(files)) {
     const file = path.join(root, name);
     await fs.mkdir(path.dirname(file), { recursive: true });

@@ -8,7 +8,7 @@ its project and user-option placeholders are Claude-specific.
 ## Install from a local checkout
 
 Use a local executor with Node.js meeting `mcp-server/package.json`'s engine
-requirement, Python 3, and the application's JDK/build prerequisites. The
+requirement, Python 3.11+, and the application's JDK/build prerequisites. The
 shared runtime currently supports Linux/macOS, not native Windows. Install
 the locked MCP dependencies before installing the plugin:
 

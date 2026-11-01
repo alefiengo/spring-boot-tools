@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
@@ -14,7 +14,7 @@ const tools = ['actuator_health', 'analyze_project', 'check_migrations', 'initia
 const pom = '<project><modelVersion>4.0.0</modelVersion><groupId>app</groupId><artifactId>demo</artifactId><version>1</version></project>';
 
 async function temporary(t) {
-  const base = await mkdtemp(path.join(tmpdir(), 'sbt-codex-'));
+  const base = await realpath(await mkdtemp(path.join(tmpdir(), 'sbt-codex-')));
   t.after(() => rm(base, { recursive: true, force: true }));
   return base;
 }
