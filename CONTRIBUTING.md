@@ -4,6 +4,12 @@ Keep this plugin focused on Spring Boot development. New components should
 have a distinct responsibility and work with the application's existing
 conventions and build configuration.
 
+Maintain both Claude Code and Codex entry points. Shared skills and the MCP
+runtime belong to both hosts; Claude hook payloads and specialist-agent
+registrations are host-specific. See `docs/codex.md` for the Codex adapter and
+its explicit verification workflow. Never claim hook parity from a manifest
+alone; exercise the actual launcher with an MCP protocol client.
+
 ## Components
 
 - Skills belong in `skills/<name>/SKILL.md`. Match the directory and frontmatter

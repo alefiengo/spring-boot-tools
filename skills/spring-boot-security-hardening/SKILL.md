@@ -136,6 +136,7 @@ The encoder must be configured with appropriate signing keys and algorithm. Exam
 
 ```java
 import java.time.Instant;
+import java.util.List;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
@@ -143,16 +144,19 @@ import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 public final class AccessTokens {
     private final JwtEncoder encoder;
     private final String issuer;
+    private final String audience;
 
-    public AccessTokens(JwtEncoder encoder, String issuer) {
+    public AccessTokens(JwtEncoder encoder, String issuer, String audience) {
         this.encoder = encoder;
         this.issuer = issuer;
+        this.audience = audience;
     }
 
     public String issue(String subject) {
         Instant now = Instant.now();
         JwtClaimsSet claims = JwtClaimsSet.builder()
             .issuer(issuer).subject(subject)
+            .audience(List.of(audience))
             .issuedAt(now).expiresAt(now.plusSeconds(900))
             .claim("scope", "users.read")
             .build();
@@ -161,7 +165,7 @@ public final class AccessTokens {
 }
 ```
 
-Validate issuer, audience, algorithm and expiry on consumption. Use short-lived access tokens and rotate/revoke refresh tokens with reuse detection. A refresh token in an HttpOnly, Secure, SameSite cookie is still browser-supplied authentication: enforce CSRF tokens and origin checks on the refresh endpoint. SameSite is defense in depth, not a replacement for CSRF protection.
+Configure the issuer's `audience` with the same intended resource identifier as `JWT_AUDIENCE` above. Validate issuer, audience, algorithm and expiry on consumption. Use short-lived access tokens and rotate/revoke refresh tokens with reuse detection. A refresh token in an HttpOnly, Secure, SameSite cookie is still browser-supplied authentication: enforce CSRF tokens and origin checks on the refresh endpoint. SameSite is defense in depth, not a replacement for CSRF protection.
 
 ## Hardening checklist
 

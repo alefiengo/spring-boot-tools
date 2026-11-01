@@ -14,6 +14,16 @@ Reports may concern hooks, the shared runtime, MCP execution, registrations
 or skill/agent instructions. Report defects in Claude Code or third-party
 application dependencies to their respective maintainers.
 
+Codex uses a separate MCP launcher and configuration. It does not inherit
+Claude's edit guards or Stop verification; invoke verification explicitly.
+Host approvals and sandbox settings remain the user's responsibility.
+
+Project initialization is an explicitly requested write operation and contacts
+Spring Initializr. Generated wrappers and build scripts are project code;
+generation does not authorize executing them. Existing build contexts and
+nonempty destinations must not be scaffolded or overwritten. This restriction
+also prevents using the initializer to add modules to an existing project.
+
 ## Trust boundaries
 
 Maven/Gradle commands run without a shell and use validated tasks, modules,

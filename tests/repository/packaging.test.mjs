@@ -18,6 +18,10 @@ test('plugin, marketplace and MCP package versions agree', () => {
   assert.equal(entry.version, plugin.version);
   assert.match(plugin.version, /^\d+\.\d+\.\d+$/);
   assert.equal(json('mcp-server/package.json').version, plugin.version);
+  assert.equal(json('.codex-plugin/plugin.json').version, plugin.version);
+  assert.equal(json('mcp-server/package-lock.json').version, plugin.version);
+  assert.equal(json('mcp-server/package-lock.json').packages[''].version, plugin.version);
+  assert.ok(read('mcp-server/index.js').includes(`version: "${plugin.version}"`));
 });
 
 test('the standalone LSP map registers a Java server with the required fields', () => {
@@ -92,7 +96,7 @@ test('MCP lockfile matches package metadata and declared direct dependencies', (
 test('registered components and shared runtime are consistent', () => {
   const agents = readdirSync(path.join(root, 'agents')).filter(f => f.endsWith('.md')).sort();
   assert.deepEqual(agents, ['sb-api-designer.md', 'sb-architect.md', 'sb-code-reviewer.md', 'sb-docker-reviewer.md', 'sb-migration-reviewer.md', 'sb-runtime-reviewer.md', 'sb-test-writer.md']);
-  assert.equal(readdirSync(path.join(root, 'skills')).length, 15);
+  assert.equal(readdirSync(path.join(root, 'skills')).length, 16);
   assert.ok(!json('.claude-plugin/plugin.json').experimental?.monitors);
   const hooks = json('hooks/hooks.json').hooks;
   assert.equal(Object.values(hooks).flatMap(entries => entries.flatMap(entry => entry.hooks)).length, 5);

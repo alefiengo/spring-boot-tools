@@ -38,9 +38,19 @@ configuration or build dependency change is not merely documentation.
 
 A prose-only documentation change needs a direct document review, not a mandatory
 build or three application reviewers. For mixed changes launch the selected
-specialists in parallel. Record why each specialist is selected or omitted.
+specialists in parallel when the host provides those agents and delegation is
+authorized. Record why each specialist is selected or omitted.
 Give reviewers the diff, relevant context and available test results. They
 are read-only and cannot run builds. Include missing review evidence explicitly.
+
+Codex does not register this plugin's Claude `agents/` definitions. When those
+specialists are unavailable, perform their relevant checks directly, using the
+matching `../../agents/<name>.md` file relative to this skill folder as read-only
+review guidance. Do not interpret Claude tool/model frontmatter as Codex
+configuration. Report that a direct review was performed and which checks were
+covered; never claim independent specialists ran. An explicitly required
+independent review remains missing evidence. Host permissions and user limits
+on delegation still apply.
 
 ## 3. Run one mechanical gate
 
@@ -53,9 +63,11 @@ Use `analyze_project` to establish the build system/modules. Execute
 project/module/profiles required by its documented workflow. Use the shared
 runtime CLI when MCP is unavailable; see the build-run skill.
 
-The MCP and Stop hook share input fingerprints and successful gate records.
+On Claude, the MCP and Stop hook share input fingerprints and successful gate records.
 A current equivalent complete gate can be reused; report whether the gate
 executed or was reused. Compile/test results are not complete verification.
+On Codex, hooks are disabled: explicitly request the gate through MCP or the
+shared runtime CLI and inspect its result. Never assume a Stop hook will run.
 Required integration/contract tasks outside the standard gate must run and
 be reported separately; a standard gate cannot prove those extra tasks passed.
 Never record a direct shell build as verified without passing through the

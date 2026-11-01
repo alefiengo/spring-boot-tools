@@ -9,7 +9,7 @@ const http = require('node:http');
 const entry = path.resolve(__dirname, '../../mcp-server/index.js');
 
 async function fixture(t, files, env = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-regression-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-regression-')));
   for (const [name, content] of Object.entries(files)) {
     const file = path.join(root, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -45,9 +45,9 @@ async function fixture(t, files, env = {}) {
 const value = result => JSON.parse(result.content[0].text);
 const pom = '<project><modelVersion>4.0.0</modelVersion><groupId>app</groupId><artifactId>demo</artifactId><version>1</version></project>';
 
-test('real stdio initializes and registers exactly six tools', async t => {
+test('real stdio initializes and registers exactly seven tools', async t => {
   const client = await fixture(t, { 'pom.xml': pom });
-  assert.deepEqual((await client.request('tools/list', {})).tools.map(t => t.name).sort(), ['actuator_health','analyze_project','check_migrations','openapi_endpoints','run_build','run_tests']);
+  assert.deepEqual((await client.request('tools/list', {})).tools.map(t => t.name).sort(), ['actuator_health','analyze_project','check_migrations','initialize_project','openapi_endpoints','run_build','run_tests']);
 });
 
 test('Maven and test filters reject shell payloads; valid wrapper args remain distinct', async t => {

@@ -1,0 +1,11 @@
+{
+  "name": "spring-boot-tools",
+  "version": "0.2.0",
+  "description": "Spring Boot skills and shared-runtime MCP tools for local Codex workspaces. Verification is explicit; Claude hooks and agents are not registered.",
+  "skills": "./skills/",
+  "mcpServers": "./codex/mcp.json",
+  "hooks": {
+    "hooks": {}
+  },
+  "requires_local_executor": true
+}

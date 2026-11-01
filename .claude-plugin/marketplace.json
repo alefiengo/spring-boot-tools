@@ -1,6 +1,6 @@
 {
   "name": "spring-boot-tools-marketplace",
-  "description": "Spring Boot productivity tools for Claude Code: skills, subagents, hooks, and an MCP server.",
+  "description": "Spring Boot tools for Claude Code and Codex: shared skills, safe initialization and coordinated MCP verification.",
   "owner": {
     "name": "alefiengo"
   },
@@ -8,8 +8,8 @@
     {
       "name": "spring-boot-tools",
       "source": "./",
-      "description": "Spring Boot toolkit: 15 skills, 7 agents, 5 coordinated hooks, 6 MCP tools, optional Java LSP, and executable regression checks.",
-      "version": "0.1.0",
+      "description": "Spring Boot toolkit: 16 skills, 7 MCP tools including safe project initialization, 7 Claude agents, 5 Claude hooks, optional Java LSP, and a Codex adapter.",
+      "version": "0.2.0",
       "author": {
         "name": "alefiengo"
       },

@@ -16,7 +16,9 @@ Guides code generation following idiomatic Spring Boot conventions.
 
 ## Activation
 
-This skill loads automatically when you ask to generate entities, REST endpoints, services, repositories, DTOs, configurations, or any new Spring Boot code.
+Use this skill when asked to generate entities, REST endpoints, services, repositories, DTOs, configurations, or other Spring Boot application code. Skill selection depends on the host; explicit invocation is available.
+
+For a request to scaffold a new project, use [Initializr](../spring-boot-initializr/SKILL.md) only when explicitly requested and its destination checks pass. Adding code to an existing application never authorizes initializing another project.
 
 ## Layer conventions
 

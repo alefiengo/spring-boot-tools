@@ -22,6 +22,8 @@ Start with `analyze_project` when MCP is available: identify root, build system,
 
 Use MCP `run_build` for finite compile/package/verify tasks and `run_tests` for test execution and fresh reports. Both share discovery and execution coordination with hooks. Pass the tool's documented module/profile options rather than constructing shell commands. A profile changes configuration and dependencies; inspect its definition first. A module's relative path is distinct from a Maven artifact selector or Gradle task prefix.
 
+On Codex, this plugin disables its Claude hooks and does not register Claude agents or the Java LSP. After relevant edits, explicitly call `run_build` for the full verification gate and inspect the result before reporting success; there is no automatic Stop verification. Use the actual application workspace as the session cwd, not the installed plugin directory. `analyze_project` must identify the intended application before a build.
+
 When MCP is unavailable, use the shared CLI below for finite builds. It accepts JSON on stdin and returns discovery/command/result evidence. The runtime coordinates locks and input fingerprints with MCP/hooks. Only an unchanged successful full-root default `verify` (Maven) or `check` (Gradle) can satisfy the full verification gate; a compile, selected test, module or profile run cannot. Batch edits before compiling. A failed build must be diagnosed before repeating it; do not clean by default or run compile, package and verify consecutively when verify already covers the needed lifecycle.
 
 ## Common commands
@@ -47,20 +49,25 @@ java {
 ```
 
 ```bash
+# Set this to the installed plugin directory from the loaded skill's location
+# (two parents above this skill folder), not the application cwd.
+# Codex does not guarantee CODEX_PLUGIN_ROOT in your shell. Use the resolved
+# absolute path; Claude users may use their supplied CLAUDE_PLUGIN_ROOT.
+SBT_PLUGIN_ROOT='/absolute/path/to/spring-boot-tools'
 # Identify root/tool/wrapper/modules; paths in these JSON examples are illustrative.
-python3 "${CLAUDE_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
+python3 "${SBT_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
 {"action":"discover","projectRoot":"/path/to/project"}
 JSON
 # Compile using discovery, process coordination and evidence capture.
-python3 "${CLAUDE_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
+python3 "${SBT_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
 {"action":"run","projectRoot":"/path/to/project","task":"compile"}
 JSON
 # Full verification; reuse only an equivalent successful unchanged full gate.
-python3 "${CLAUDE_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
+python3 "${SBT_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
 {"action":"run","projectRoot":"/path/to/project","task":"verify"}
 JSON
 # Maven-only profile, selected discovered module; this is not the full gate.
-python3 "${CLAUDE_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
+python3 "${SBT_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
 {"action":"run","projectRoot":"/path/to/project","task":"package","module":"service","profiles":["integration"],"reuse":false}
 JSON
 ```

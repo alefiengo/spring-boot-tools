@@ -47,7 +47,10 @@ def maven_modules(folder):
         if len(raw) > 8 * 1024 * 1024 or re.search(br'<!\s*(?:DOCTYPE|ENTITY)', raw, re.I):
             raise ValueError('Unsafe or oversized POM')
         xml = ET.fromstring(raw)
-        return [node.text.strip() for node in xml.findall('./{*}modules/{*}module') if node.text and node.text.strip()]
+        # Membership, not activation: profile modules must share the reactor's
+        # lock even when invoked directly. The build still selects active profiles.
+        nodes = xml.findall('./{*}modules/{*}module') + xml.findall('./{*}profiles/{*}profile/{*}modules/{*}module')
+        return list(dict.fromkeys(node.text.strip() for node in nodes if node.text and node.text.strip()))
     except ET.ParseError:
         return []  # discovery works on incomplete edits; the build reports syntax failures
 
@@ -310,9 +313,17 @@ def terminate(process, own_group):
     process.wait()
 
 
-def test_report_snapshot(root):
+def test_report_snapshot(root, module_roots=None):
     """Read report contents while the caller owns the project build lock."""
     reports = {}
+    total = 0
+    root = Path(root).resolve()
+    if module_roots is None:
+        try:
+            module_roots = [Path(m['root']) for m in discover(root)['modules']]
+        except ValueError:
+            module_roots = []
+    module_roots = {Path(p).resolve() for p in module_roots}
     excluded = {'.git', 'node_modules', '.gradle', 'src', '.idea', '.mvn', '.claude'}
     for folder, directories, _ in os.walk(root, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded
@@ -320,10 +331,15 @@ def test_report_snapshot(root):
         for name in ('target', 'build'):
             if name not in directories:
                 continue
-            directories.remove(name)
             output = Path(folder) / name
+            if output.resolve() in module_roots or build_file(output) or any((output / s).is_file() for s in ('settings.gradle', 'settings.gradle.kts')):
+                continue  # a real module named build/target is not an output tree
+            directories.remove(name)
             for report_dir in (('surefire-reports', 'failsafe-reports') if name == 'target' else ('test-results',)):
-                for report_folder, children, files in os.walk(output / report_dir, followlinks=False):
+                report_root = output / report_dir
+                if report_root.is_symlink() or not report_root.resolve().is_relative_to(root):
+                    raise ValueError(f'Unsafe test report directory: {report_root}')
+                for report_folder, children, files in os.walk(report_root, followlinks=False):
                     children[:] = sorted(child for child in children if child not in IGNORED
                                          and not (Path(report_folder) / child).is_symlink())
                     for filename in sorted(files):
@@ -336,6 +352,9 @@ def test_report_snapshot(root):
                         content = file.read_bytes()
                         if len(content) > 8 * 1024 * 1024:
                             raise ValueError(f'Test report exceeds 8 MiB limit: {file}')
+                        total += len(content)
+                        if total > 8 * 1024 * 1024 or len(reports) >= 1024:
+                            raise ValueError('Test report aggregate exceeds 8 MiB or 1024 files; narrow test/module scope')
                         reports[str(file)] = ((metadata.st_mtime_ns, metadata.st_ctime_ns, metadata.st_size),
                                               content.decode('utf-8', 'replace'))
     return reports
@@ -356,7 +375,9 @@ def run_build(request, own_process_group=False):
         collect_reports = request.get('collectTestReports', False)
         if collect_reports and plan['tasks'] != ['test']:
             raise ValueError('collectTestReports requires only the test task')
-        reports_before = test_report_snapshot(plan['root']) if collect_reports else {}
+        report_root = next((m['root'] for m in plan['modules'] if m['path'] == plan['module']), plan['root'])
+        report_modules = [m['root'] for m in plan['modules']]
+        reports_before = test_report_snapshot(report_root, report_modules) if collect_reports else {}
         cache_diagnostic = None
         try:
             before = fingerprint(plan['root'])
@@ -429,10 +450,11 @@ def run_build(request, own_process_group=False):
                     pass
             report_result = {}
             if collect_reports:
-                reports_after = test_report_snapshot(plan['root'])
+                reports_after = test_report_snapshot(report_root, report_modules)
                 fresh = [{'file': file, 'content': value[1]} for file, value in reports_after.items()
                          if reports_before.get(file) != value]
-                report_result = {'testReports': fresh, 'staleReportsIgnored': len(reports_after) - len(fresh)}
+                report_result = {'testReports': fresh, 'staleReportsIgnored': len(reports_after) - len(fresh),
+                                 'reportScope': report_root}
             return dict(plan, **report_result, ok=ok, exitCode=process.returncode, **{name: bytes(value).decode('utf-8', 'replace') for name, value in outputs.items()},
                         reused=False, durationMs=round((time.monotonic() - start) * 1000), fingerprint=before, inputsChanged=before is not None and after is not None and before != after, cacheable=before is not None and after is not None, cacheDiagnostic=cache_diagnostic, timedOut=timed_out, outputLimitExceeded=too_large)
         finally:
@@ -471,6 +493,16 @@ def main():
         action = request.get('action', 'discover')
         if action == 'discover':
             result = discover(request.get('projectRoot') or os.getcwd())
+        elif action == 'initialize':
+            from project_initializer import initialize_project
+            def cancelled(signum, frame):
+                raise BuildCancelled(f'Initialization cancelled by signal {signum}')
+            previous = {sig: signal.signal(sig, cancelled) for sig in (signal.SIGTERM, signal.SIGINT)}
+            try:
+                result = initialize_project(request)
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
         elif action == 'plan':
             result = build_plan(request)
         elif action == 'run':
@@ -479,7 +511,17 @@ def main():
             result = mark_pending(request.get('projectRoot') or os.getcwd())
         else:
             raise ValueError('Unknown runtime action')
-        print(json.dumps(result))
+        encoded = json.dumps(result)
+        # Leave headroom under the MCP bridge's 32 MiB transport budget even
+        # when control characters cause substantial JSON escaping expansion.
+        if len(encoded.encode('utf-8')) > 24 * 1024 * 1024:
+            result = {'ok': False, 'exitCode': 1,
+                      'error': 'Runtime result exceeds 24 MiB serialized limit; narrow test/module scope',
+                      'buildExitCode': result.get('exitCode'),
+                      'reportsOmitted': len(result.get('testReports', [])),
+                      'outputOmitted': True}
+            encoded = json.dumps(result)
+        print(encoded)
     except (OSError, ValueError, TypeError, TimeoutError, BuildCancelled) as error:
         print(json.dumps({'ok': False, 'error': str(error), 'exitCode': 1}))
         sys.exit(1)
