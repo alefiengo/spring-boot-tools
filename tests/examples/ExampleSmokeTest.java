@@ -31,10 +31,17 @@ class ExampleSmokeTest {
             org.springframework.security.oauth2.jwt.JwtEncoderParameters.from(
                 org.springframework.security.oauth2.jwt.JwsHeader.with(MacAlgorithm.HS256).build(), parameters.getClaims()));
         JwtDecoder decoder = NimbusJwtDecoder.withSecretKey(secret).macAlgorithm(MacAlgorithm.HS256).build();
-        String token = new AccessTokens(encoder, "https://issuer.example").issue("42");
+        String token = new AccessTokens(encoder, "https://issuer.example", "users-api").issue("42");
         var jwt = decoder.decode(token);
         assertEquals("42", jwt.getSubject());
         assertEquals("https://issuer.example", jwt.getIssuer().toString());
+        assertEquals(List.of("users-api"), jwt.getAudience());
+        var audienceValidator = new org.springframework.security.oauth2.jwt.JwtClaimValidator<List<String>>(
+            "aud", audiences -> audiences != null && audiences.contains("users-api"));
+        assertFalse(audienceValidator.validate(jwt).hasErrors());
+        var wrongAudience = new org.springframework.security.oauth2.jwt.JwtClaimValidator<List<String>>(
+            "aud", audiences -> audiences != null && audiences.contains("other-api"));
+        assertTrue(wrongAudience.validate(jwt).hasErrors());
         assertEquals("users.read", jwt.getClaimAsString("scope"));
         assertEquals(900, java.time.Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt()).toSeconds());
     }

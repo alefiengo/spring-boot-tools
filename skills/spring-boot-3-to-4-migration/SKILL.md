@@ -27,10 +27,13 @@ Separate stages: (1) stabilize supported Boot 3.5 and remove deprecations; (2) m
 Before touching anything:
 
 1. **Upgrade to the latest 3.5.x** and resolve every deprecation in that version (removed APIs can become build/runtime failures in 4.x):
-   ```bash
-   ./mvnw dependency:tree -Dincludes=org.springframework.boot
-   ./mvnw clean test
-   ```
+   Use `run_build` with `task:"dependencies"` to resolve the dependency tree
+   and inspect the Spring Boot entries. Capture baseline tests with `run_tests`.
+   If MCP is unavailable, use the shared runtime CLI in
+   [build/run](../spring-boot-build-run/SKILL.md) with `task:"dependencies"`
+   and `task:"test"`. Select the discovered module/profiles explicitly. Do not
+   clean by default; use coordinated `run_build` with `task:"clean"` only when
+   stale outputs are the demonstrated problem.
 2. **Dedicated branch**:
    ```bash
    git checkout -b boot-4-migration
@@ -97,20 +100,27 @@ Databind/core packages move from `com.fasterxml.jackson.*` to `tools.jackson.*`;
 
 ## 5. Verification
 
+Use `run_build` with `task:"verify"` for Maven or `task:"check"` for Gradle
+after each coherent migration stage. These full gates include the configured
+compile/test lifecycle; do not run compile, test and verify consecutively.
+For diagnosis, use `run_build` with `task:"compile"` or `run_tests` with the
+concrete controller test class in `testClass`. The shared runtime validates
+filters: do not pass a shell wildcard such as `*ControllerTest`.
+
+When MCP is unavailable, use the shared runtime CLI and explicit project root
+as described in [build/run](../spring-boot-build-run/SKILL.md). Inspect the exit
+status, executed/reused scope and fresh test reports. A compile or selected
+controller test is not a full gate. Codex users must request verification
+explicitly because this plugin's hooks are disabled there.
+
+Startup and OpenRewrite are separate application/migration processes outside
+the finite build gate. Start the app only when needed for the requested runtime
+checks and stop the instance you started after collecting evidence:
+
 ```bash
-# 1. Compiles
-./mvnw clean compile
-
-# 2. Tests (with a real DB if Testcontainers 2 is in use)
-./mvnw test
-
-# 3. The app starts and exposes endpoints
 ./mvnw spring-boot:run
 # In another terminal, after startup reports readiness:
 curl -sf http://localhost:8080/actuator/health | jq .
-
-# 4. JSON contracts did not break (compare against snapshots or controller tests)
-./mvnw test -Dtest='*ControllerTest'
 ```
 
 Compatibility evidence must include real endpoint status/headers/body comparisons, readiness and clean startup, security negative cases, transaction/database integration and independently released consumer contracts. Compiling the new imports is insufficient. Document intentional API changes and the consumer migration/rollback plan; do not downgrade an already-applied database migration during rollback.

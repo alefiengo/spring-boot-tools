@@ -1,11 +1,11 @@
-# Spring Boot Tools for Claude Code
+# Spring Boot Tools for Claude Code and Codex
 
 [![CI](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alefiengo/spring-boot-tools/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/alefiengo/spring-boot-tools)](https://github.com/alefiengo/spring-boot-tools/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A Claude Code plugin for developing and reviewing Spring Boot applications.
-It provides 15 skills, seven specialist agents, five hooks and six MCP tools.
+A plugin for developing and reviewing Spring Boot applications with Claude Code and Codex.
+It provides 16 shared skills and seven MCP tools. Claude Code additionally loads seven specialist agents and five hooks.
 Build execution and verification share one runtime so hooks and tools can
 coordinate their work.
 
@@ -21,6 +21,22 @@ coordinate their work.
 Skills target Spring Boot 4 applications and include migration guidance for
 Boot 3 projects. Inspect the application's build before selecting dependency
 versions or adapting examples.
+
+For Codex installation, configuration and host differences, see
+[Codex support](docs/codex.md). Both hosts use the same MCP implementation;
+Codex verification is explicit and does not depend on Claude's Stop hook.
+
+To create a project, explicitly ask, for example:
+
+```text
+Initialize a new Spring Boot project in /path/to/new-service with Maven,
+Java and the web dependency. Use currently available Initializr options.
+```
+
+The initializer checks the active workspace and destination for an existing
+Maven/Gradle project context before contacting Spring Initializr. It never
+re-scaffolds an existing application, overwrites nonempty destinations or
+runs generated builds. See the initialization skill for supported targets.
 
 ## Install and use
 
@@ -76,6 +92,7 @@ skill lives in `skills/<name>/SKILL.md`.
 
 | Skill | Purpose |
 |---|---|
+| `spring-boot-initializr` | Initialize an explicitly requested new project without overwriting existing work |
 | `spring-boot-api-contracts` | REST contracts, error responses and OpenAPI |
 | `spring-boot-build-run` | Build, startup, profiles and troubleshooting |
 | `spring-boot-ci` | Build gates, scans and image publication in CI |
@@ -117,6 +134,7 @@ need no application build or application reviewers.
 
 | Tool | Responsibility |
 |---|---|
+| `initialize_project` | Generate a new project through Spring Initializr into a safe empty directory; refuse existing projects |
 | `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings |
 | `run_build` | Execute controlled Maven/Gradle tasks with module/profile scope |
 | `run_tests` | Run tests and summarize fresh XML reports and failures |
@@ -150,6 +168,8 @@ Versioned top-level directories and configuration files:
 | Path | Contents |
 |---|---|
 | `.claude-plugin/` | Plugin and marketplace manifests |
+| `.codex-plugin/` | Codex compatibility manifest |
+| `codex/` | Codex MCP configuration and workspace-preserving launchers |
 | `.github/` | CI workflow, Dependabot configuration, issue forms and PR template |
 | `agents/` | Specialist design, review and test-writing roles |
 | `docs/` | Architecture, shared runtime behavior and operational limits |

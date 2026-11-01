@@ -12,10 +12,75 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / 'runtime/project_runtime.py'
 sys.path.insert(0, str(RUNTIME.parent))
-from project_runtime import discover, build_plan, run_build
+from project_runtime import discover, build_plan, run_build, test_report_snapshot
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_profile_module_uses_reactor_root(self):
+        (self.root / 'pom.xml').write_text('<project><profiles><profile><id>integration</id><modules><module>integration</module></modules></profile></profiles></project>')
+        child = self.root / 'integration'
+        child.mkdir()
+        (child / 'pom.xml').write_text('<project/>')
+        self.assertEqual(discover(child)['root'], str(self.root))
+        self.assertEqual(build_plan(self.request(module='integration', profiles=['integration']))['module'], 'integration')
+
+    def test_report_root_symlink_refused(self):
+        with tempfile.TemporaryDirectory() as external:
+            (Path(external) / 'test.xml').write_text('<testsuite tests="1"/>')
+            (self.root / 'target/surefire-reports').symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'Unsafe test report directory'):
+                test_report_snapshot(self.root)
+
+    def test_module_named_build_keeps_test_reports(self):
+        module = self.root / 'build'
+        reports = module / 'target/surefire-reports'
+        reports.mkdir(parents=True)
+        (module / 'pom.xml').write_text('<project/>')
+        report = reports / 'tests.xml'
+        report.write_text('<testsuite tests="1"/>')
+        self.assertIn(str(report), test_report_snapshot(self.root))
+
+    def test_gradle_module_named_build_without_local_build_script(self):
+        (self.root / 'pom.xml').unlink()
+        (self.root / 'settings.gradle').write_text('include(":build")')
+        reports = self.root / 'build/build/test-results/test'
+        reports.mkdir(parents=True)
+        report = reports / 'tests.xml'
+        report.write_text('<testsuite tests="1"/>')
+        self.assertIn(str(report), test_report_snapshot(self.root))
+
+    def test_module_report_budget_ignores_unrelated_reports(self):
+        (self.root / 'pom.xml').write_text('<project><modules><module>selected</module></modules></project>')
+        module = self.root / 'selected'
+        module.mkdir()
+        (module / 'pom.xml').write_text('<project/>')
+        reports = self.root / 'target/surefire-reports'
+        reports.mkdir()
+        for index in range(3):
+            (reports / f'{index}.xml').write_bytes(b' ' * (3 * 1024 * 1024))
+        result = self.invoke(task='test', module='selected', collectTestReports=True)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['reportScope'], str(module))
+        self.assertEqual(result['testReports'], [])
+
+    def test_aggregate_report_budget_fails_with_diagnostic(self):
+        reports = self.root / 'target/surefire-reports'
+        reports.mkdir()
+        for index in range(3):
+            (reports / f'{index}.xml').write_bytes(b' ' * (3 * 1024 * 1024))
+        with self.assertRaisesRegex(ValueError, 'aggregate exceeds'):
+            test_report_snapshot(self.root)
+
+    def test_escaped_result_exceeds_transport_with_explicit_diagnostic(self):
+        import shlex
+        self.wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) +
+                                ' -c "import sys; sys.stdout.write(chr(1) * 5 * 1024 * 1024)"\n')
+        result = self.invoke(maxOutputBytes=8 * 1024 * 1024)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['buildExitCode'], 0)
+        self.assertTrue(result['outputOmitted'])
+        self.assertIn('serialized limit', result['error'])
+
     def setUp(self):
         self.fixture = tempfile.TemporaryDirectory()
         self.addCleanup(self.fixture.cleanup)

@@ -1,0 +1,16 @@
+{
+  "type": {"default": "maven-project", "values": [
+    {"id": "maven-project", "action": "/starter.zip", "tags": {"format": "project"}},
+    {"id": "gradle-project-kotlin", "action": "/starter.zip", "tags": {"format": "project"}},
+    {"id": "maven-build", "action": "/pom.xml", "tags": {"format": "build"}}
+  ]},
+  "language": {"default": "java", "values": [{"id": "java"}, {"id": "kotlin"}]},
+  "bootVersion": {"default": "9.8.7", "values": [{"id": "9.8.7"}, {"id": "9.8.6"}]},
+  "javaVersion": {"default": "29", "values": [{"id": "29"}, {"id": "25"}]},
+  "packaging": {"default": "jar", "values": [{"id": "jar"}, {"id": "war"}]},
+  "groupId": {"default": "com.example"},
+  "artifactId": {"default": "demo"},
+  "packageName": {"default": "com.example.demo"},
+  "version": {"default": "0.0.1-SNAPSHOT"},
+  "dependencies": {"values": [{"name": "Web", "values": [{"id": "web"}]}]}
+}

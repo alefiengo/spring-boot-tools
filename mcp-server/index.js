@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Six Spring-aware tools; project discovery and build coordination are shared with hooks. */
+/** Seven Spring-aware tools; discovery, builds and initialization use the shared runtime. */
 
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -17,7 +17,7 @@ import { parseAllDocuments } from "yaml";
 // group so Maven/Gradle JVMs cannot keep running after cancellation or timeout.
 export function run(command, args = [], { cwd, timeout = 120_000, signal, input, maxOutputBytes = 4 * 1024 * 1024, env = process.env } = {}) {
   return new Promise((resolve) => {
-    let stdout = "", stderr = "", reason, spawnError, size = 0, killTimer;
+    let stdout = "", stderr = "", reason, spawnError, size = 0, escalation;
     const grouped = process.platform !== "win32";
     const child = spawn(command, args, { cwd, env, shell: false, detached: grouped, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
     if (input !== undefined) { child.stdin.on("error", () => {}); child.stdin.end(input); }
@@ -28,8 +28,9 @@ export function run(command, args = [], { cwd, timeout = 120_000, signal, input,
       if (reason) return;
       reason = why;
       kill("SIGTERM");
-      killTimer = setTimeout(() => kill("SIGKILL"), 1000);
-      killTimer.unref();
+      // A leader can exit and close its pipes while descendants still ignore
+      // SIGTERM. Keep escalation alive and wait for it before reporting done.
+      escalation = new Promise(done => setTimeout(() => { kill("SIGKILL"); done(); }, 1000));
     };
     const capture = (stream) => (chunk) => {
       const remaining = maxOutputBytes - size;
@@ -45,10 +46,10 @@ export function run(command, args = [], { cwd, timeout = 120_000, signal, input,
     if (signal?.aborted) abort();
     const timer = setTimeout(() => stop("Timed out"), timeout);
     child.on("error", (error) => { spawnError = error.message; stderr += error.message; });
-    child.on("close", (code, exitSignal) => {
+    child.on("close", async (code, exitSignal) => {
       clearTimeout(timer);
-      clearTimeout(killTimer);
       signal?.removeEventListener("abort", abort);
+      await escalation;
       resolve({ stdout, stderr, exitCode: spawnError ? 1 : code ?? 1, ...(spawnError || reason || exitSignal ? { error: spawnError || reason || `Terminated by ${exitSignal}` } : {}) });
     });
   });
@@ -65,13 +66,14 @@ function parseXml(text) {
   if (valid !== true) throw new Error(`Invalid XML: ${valid.err.msg}`);
   return xmlParser.parse(text);
 }
-async function walk(dir) {
+async function walk(dir, inSource = path.normalize(dir).split(path.sep).includes("src")) {
+  inSource ||= path.basename(dir) === "src";
   let entries;
   try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch (e) { if (e.code === "ENOENT") return []; throw e; }
   const files = [];
   for (const entry of entries) {
     const file = path.join(dir, entry.name);
-    if (entry.isDirectory() && ![".git", "node_modules", ".gradle", "target", "build"].includes(entry.name)) files.push(...await walk(file));
+    if (entry.isDirectory() && (inSource || ![".git", "node_modules", ".gradle", "target", "build"].includes(entry.name))) files.push(...await walk(file, inSource));
     else if (entry.isFile()) files.push(file);
   }
   return files.sort();
@@ -88,7 +90,11 @@ async function runtime(payload, ctx, timeout = 120_000) {
   if (execution.error) throw new Error(execution.error);
   let response;
   try { response = JSON.parse(execution.stdout); } catch { throw new Error(`Project runtime failed: ${execution.stderr || execution.stdout}`); }
-  if (execution.exitCode !== 0 || response.error) throw new Error(response.error || execution.stderr || "Project runtime failed");
+  if (execution.exitCode !== 0 || response.error) {
+    const error = new Error(response.error || execution.stderr || "Project runtime failed");
+    error.runtimeResponse = { ...response, error: error.message };
+    throw error;
+  }
   return response;
 }
 async function requireProject() {
@@ -163,7 +169,7 @@ async function checkMigrations(args, ctx) {
   }
   const selectedModule = args?.module;
   if (selectedModule && !project.modules.some(m => m.path === selectedModule)) throw new Error("module must match a discovered module path");
-  const scanRoot = selectedModule ? path.join(root, selectedModule) : root;
+  const scanRoot = selectedModule ? project.modules.find(m => m.path === selectedModule).root : root;
   const files = (await walk(scanRoot)).filter(f => /(?:^|[/\\])src[/\\]main[/\\]resources[/\\]db[/\\]migration[/\\][^/\\]+\.sql$/.test(f));
   const migrations = [], errors = [], risks = [], groups = new Map();
   for (const file of files) {
@@ -289,6 +295,11 @@ async function actuatorHealth(args, ctx) {
     let health;
     if (response.ok) {
       try { health = JSON.parse(response.text); } catch { response.ok = false; response.error = "Health endpoint did not return valid JSON."; }
+      if (response.ok && (!health || typeof health !== "object" || Array.isArray(health) || typeof health.status !== "string" || !health.status.trim())) {
+        response.ok = false;
+        response.error = "Health endpoint must return an object with a nonempty string status.";
+        health = undefined;
+      }
     } else if (response.status >= 500) { try { health = JSON.parse(response.text); } catch { /* no response body disclosure for access errors */ } }
     if (["DOWN", "OUT_OF_SERVICE"].includes(health?.status)) { response.ok = false; response.diagnosis = "Health reports an unavailable application or dependency; inspect application logs."; }
     results.push({ probe, endpoint, ...response, text: undefined, ...(health ? { health } : {}) });
@@ -330,9 +341,18 @@ async function openapiEndpoints(args, ctx) {
 export function createServer() {
   const server = new McpServer({ name: "mcp-spring-boot", version: "0.1.0" });
   const register = (name, description, inputSchema, handler) => server.registerTool(name, { description, ...(inputSchema ? { inputSchema } : {}) }, async (...args) => {
-    try { return await handler(...args); } catch (e) { return textResult({ error: e.message }, true); }
+    try { return await handler(...args); } catch (e) { return textResult(e.runtimeResponse ?? { error: e.message }, true); }
   });
   const selection = { module: z.string().optional(), profiles: z.array(z.string()).optional() };
+  register("initialize_project", "Scaffolds a new Spring Boot project ONLY when the user explicitly asks to create/scaffold one. Requires an absent target directory with an existing parent. Refuses existing project/ancestor/module contexts and existing targets. Fetches official start.spring.io metadata and ZIP, validates/stages files, never runs builds.", z.object({
+    userRequested: z.literal(true).describe("Set true only for an explicit user request to scaffold a new project; never infer from a missing build."),
+    targetDirectory: z.string().min(1).max(4096).describe("Explicit new directory, absolute or relative to PROJECT_ROOT. Parent must exist; no symlinks or traversal."),
+    type: z.string().optional(), language: z.string().optional(), bootVersion: z.string().optional(),
+    javaVersion: z.string().optional(), packaging: z.string().optional(),
+    groupId: z.string().optional(), artifactId: z.string().optional(), name: z.string().optional(),
+    description: z.string().optional(), packageName: z.string().optional(), version: z.string().optional(),
+    dependencies: z.array(z.string()).max(50).optional(),
+  }), async (args, ctx) => textResult(await runtime({ ...args, action: "initialize" }, ctx, 45_000)));
   register("analyze_project", "Discovers modules, declared dependency/version provenance, persistence annotations, configuration file inventory and capabilities using the shared project runtime.", undefined, analyzeProject);
   register("run_build", "Runs controlled Maven/Gradle tasks through the shared build coordinator; wrappers, module/profile validation, process locking and bounded output are shared with hooks.", z.object({ task: z.enum(["compile", "test-compile", "package", "verify", "check", "clean", "dependencies"]).default("compile"), force: z.boolean().default(false).describe("Force a fresh verification even when unchanged inputs were already verified."), ...selection }), runBuild);
   register("run_tests", "Runs Maven/Gradle tests with fresh structured XML reports, preserving diagnostics and rejecting stale reports; shared coordinator prevents racing builds.", z.object({ testClass: z.string().optional().describe("Qualified class name, optionally #method; validated by the shared build runtime."), ...selection }), runTests);

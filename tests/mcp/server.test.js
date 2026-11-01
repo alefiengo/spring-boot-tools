@@ -45,9 +45,9 @@ async function fixture(t, files, env = {}) {
 const value = result => JSON.parse(result.content[0].text);
 const pom = '<project><modelVersion>4.0.0</modelVersion><groupId>app</groupId><artifactId>demo</artifactId><version>1</version></project>';
 
-test('real stdio initializes and registers exactly six tools', async t => {
+test('real stdio initializes and registers exactly seven tools', async t => {
   const client = await fixture(t, { 'pom.xml': pom });
-  assert.deepEqual((await client.request('tools/list', {})).tools.map(t => t.name).sort(), ['actuator_health','analyze_project','check_migrations','openapi_endpoints','run_build','run_tests']);
+  assert.deepEqual((await client.request('tools/list', {})).tools.map(t => t.name).sort(), ['actuator_health','analyze_project','check_migrations','initialize_project','openapi_endpoints','run_build','run_tests']);
 });
 
 test('Maven and test filters reject shell payloads; valid wrapper args remain distinct', async t => {

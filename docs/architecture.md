@@ -9,8 +9,23 @@ launchers backed by a Python standard-library hook implementation. `.lsp.json`
 registers an optional externally installed Java language server.
 
 Skills provide task guidance. Agents restrict specialist work to review,
-design or test-writing scopes. The MCP server provides six Spring-aware tools;
+design or test-writing scopes. The MCP server provides seven Spring-aware tools;
 it delegates builds to the same runtime used by hooks.
+
+## Host adapters and initialization
+
+Claude Code reads `.claude-plugin/`, `.mcp.json`, `agents/` and `hooks/`.
+Codex reads `.codex-plugin/plugin.json` and the separate configuration and
+launcher under `codex/`. Shared skills and MCP tools are reused; Codex does not
+load the Claude specialist agents or edit/Stop hooks. Verification remains an
+explicit tool invocation on that host. See [Codex support](codex.md).
+
+`initialize_project` delegates to the Python runtime's initializer. It requires
+an explicit user request and destination, rejects existing build contexts and
+unsafe targets, obtains options from official Initializr metadata, validates
+and stages the archive, and publishes without overwriting existing files.
+Generation never executes wrappers or tests. Network and archive failures
+must leave existing user files intact.
 
 ## Project discovery and execution
 
@@ -29,6 +44,17 @@ inside the lock. It returns summaries of fresh reports and structured test
 failures, ignoring unchanged reports from earlier executions. The lock
 coordinates plugin invocations; a separately launched build does not
 participate in that coordination.
+
+Report snapshots reject externally linked report roots and are bounded to
+8 MiB and 1024 reports. Runtime JSON is bounded to 24 MiB to leave room under
+the MCP transport budget; oversized results return an explicit diagnostic,
+the build's actual exit code and omitted-output metadata. Narrow module/test
+scope to recover bounded results. Profile-declared Maven modules participate
+in root/lock discovery; discovery describes membership, not profile activation.
+With a selected module, `reportScope` identifies the module subtree whose fresh
+reports are collected. Maven `-am` can also execute upstream modules; their
+failures still affect the build exit code, but their XML is outside that report
+scope. Use a root test invocation to collect the whole reactor's reports.
 
 ## Verification reuse
 

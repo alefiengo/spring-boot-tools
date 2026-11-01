@@ -155,12 +155,19 @@ These commands assume the project defines the coverage profile/property and a Ja
 
 ## AI test generation
 
-Rules for Claude when generating a test:
-1. Each test class covers a single class under test.
-2. At minimum: a positive test, a boundary test (null, empty), and an error test.
-3. Name fixture helpers `aUser()`, `anAdmin()`.
-4. Build DTOs inline or with builders.
-5. Do not mock configurations or property sources unless they are external.
+Map each requested behavior or reported risk to a trigger, observable result
+and appropriate test boundary. A unit test may focus on one class; a slice or
+integration test should cover the collaborating behavior when the risk crosses
+persistence, security or serialization boundaries. Select normal, boundary and
+failure cases when they prove a requirement; do not impose a minimum set of
+categories or mirror every implementation branch.
+
+Follow existing fixture, naming and assertion conventions. Reuse test-data
+factories or builders where present; helpers such as `aUser()` are examples.
+Use observable results, state and required side effects as assertions. Avoid
+mocking the configuration or collaborator that implements the behavior being
+verified. On hosts without the shipped Claude test-writer agent, apply this
+guidance directly and report the behavior covered and any missing prerequisites.
 
 ## References
 
