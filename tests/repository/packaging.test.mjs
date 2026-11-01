@@ -18,6 +18,10 @@ test('plugin, marketplace and MCP package versions agree', () => {
   assert.equal(entry.version, plugin.version);
   assert.match(plugin.version, /^\d+\.\d+\.\d+$/);
   assert.equal(json('mcp-server/package.json').version, plugin.version);
+  assert.equal(json('.codex-plugin/plugin.json').version, plugin.version);
+  assert.equal(json('mcp-server/package-lock.json').version, plugin.version);
+  assert.equal(json('mcp-server/package-lock.json').packages[''].version, plugin.version);
+  assert.ok(read('mcp-server/index.js').includes(`version: "${plugin.version}"`));
 });
 
 test('the standalone LSP map registers a Java server with the required fields', () => {

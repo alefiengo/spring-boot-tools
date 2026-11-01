@@ -184,10 +184,14 @@ Versioned top-level directories and configuration files:
 | `.mcp.json` | MCP server launch configuration and project/user settings |
 
 The root documentation consists of this README, `CONTRIBUTING.md`,
-`SECURITY.md` and `LICENSE`. Generated dependencies, caches and evaluation
+`SECURITY.md`, `CHANGELOG.md`, `AGENTS.md` and `LICENSE`. Generated dependencies, caches and evaluation
 reports are excluded from version control.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for validation and development,
 [evals/README.md](evals/README.md) for model evaluations, and
 [SECURITY.md](SECURITY.md) for security reporting and trust boundaries.
 The project is licensed under the [MIT license](LICENSE).
+
+See the [changelog](CHANGELOG.md) for release changes and compatibility notes,
+and the [audit report](docs/audit-2026-10-31.md) for findings, validation and
+remaining coverage limits.

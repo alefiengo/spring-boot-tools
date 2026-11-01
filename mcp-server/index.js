@@ -339,7 +339,7 @@ async function openapiEndpoints(args, ctx) {
 // ── server & registration ───────────────────────────────────────────
 
 export function createServer() {
-  const server = new McpServer({ name: "mcp-spring-boot", version: "0.1.0" });
+  const server = new McpServer({ name: "mcp-spring-boot", version: "0.2.0" });
   const register = (name, description, inputSchema, handler) => server.registerTool(name, { description, ...(inputSchema ? { inputSchema } : {}) }, async (...args) => {
     try { return await handler(...args); } catch (e) { return textResult(e.runtimeResponse ?? { error: e.message }, true); }
   });

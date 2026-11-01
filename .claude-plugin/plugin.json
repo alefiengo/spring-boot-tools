@@ -1,7 +1,7 @@
 {
   "name": "spring-boot-tools",
   "description": "Spring Boot toolkit: focused skills and reviewers, coordinated build hooks and seven diagnostic MCP tools sharing project discovery and build execution.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "alefiengo"
   },
