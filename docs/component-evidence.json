@@ -25,11 +25,17 @@
   ],
   "newUnrunCases": [
     "initializr-positive",
-    "initializr-existing-project-refusal"
+    "initializr-existing-project-refusal",
+    "test-writer-agent",
+    "build-run-module-failure",
+    "api-contracts-error-shape",
+    "ci-verify-gate",
+    "no-hijack-plain-junit",
+    "no-hijack-node-ci"
   ],
   "skillCount": 16,
   "agentCount": 7,
-  "caseCount": 19,
+  "caseCount": 25,
   "interpretation": [
     "Coverage references are a map of relevant cases and test sources, not evidence those checks ran in this task.",
     "Positive task relevance never proves activation, independent delegation, or effectiveness.",
@@ -49,7 +55,9 @@
     "tests/evaluations/ablation_test.py",
     "tests/evaluations/fixtures/two-arm-report.json",
     "tests/evaluations/judge_test.py",
-    "tests/evaluations/fixture_test.py"
+    "tests/evaluations/fixture_test.py",
+    "tests/evaluations/fixtures/plugin-eval-report.json",
+    "tests/evaluations/report_format_test.py"
   ],
   "components": [
     {
@@ -72,7 +80,7 @@
       "liveComparativeResults": [],
       "marginalUsefulness": "unmeasured",
       "tokenCostEvidence": "unavailable",
-      "assessment": "Retain task-based optional delegation; measure reviewer cost."
+      "assessment": "User-invoked only (disable-model-invocation); pr-docs-selectivity invokes it with its slash command. Measure reviewer cost."
     },
     {
       "id": "spring-boot-3-to-4-migration",
@@ -103,10 +111,12 @@
       "purpose": "Client-visible contracts and compatibility",
       "behavioralCases": {
         "positiveTask": [
-          "codegen-controller"
+          "api-contracts-error-shape"
         ],
         "negativeTask": [],
-        "indirect": []
+        "indirect": [
+          "codegen-controller"
+        ]
       },
       "activationProvenByTaskRelevance": false,
       "deterministicEvidencePaths": [
@@ -118,7 +128,7 @@
       "liveComparativeResults": [],
       "marginalUsefulness": "unmeasured",
       "tokenCostEvidence": "unavailable",
-      "assessment": "Measure direct contract design; controller case is adjacent."
+      "assessment": "Direct error-contract case is unrun; controller case is adjacent."
     },
     {
       "id": "spring-boot-build-run",
@@ -126,7 +136,9 @@
       "path": "skills/spring-boot-build-run/SKILL.md",
       "purpose": "Shared runtime discovery and coordinated verification",
       "behavioralCases": {
-        "positiveTask": [],
+        "positiveTask": [
+          "build-run-module-failure"
+        ],
         "negativeTask": [
           "no-monitor-readiness"
         ],
@@ -140,7 +152,7 @@
       "liveComparativeResults": [],
       "marginalUsefulness": "unmeasured",
       "tokenCostEvidence": "unavailable",
-      "assessment": "Retain shared runtime; add direct build behavior experiment later."
+      "assessment": "Retain shared runtime; direct build-diagnosis case is unrun."
     },
     {
       "id": "spring-boot-ci",
@@ -149,10 +161,14 @@
       "purpose": "Release gates and publication boundaries",
       "behavioralCases": {
         "positiveTask": [
-          "contract-release-cycle"
+          "ci-verify-gate"
         ],
-        "negativeTask": [],
-        "indirect": []
+        "negativeTask": [
+          "no-hijack-node-ci"
+        ],
+        "indirect": [
+          "contract-release-cycle"
+        ]
       },
       "activationProvenByTaskRelevance": false,
       "deterministicEvidencePaths": [
@@ -162,7 +178,7 @@
       "liveComparativeResults": [],
       "marginalUsefulness": "unmeasured",
       "tokenCostEvidence": "unavailable",
-      "assessment": "Existing contract case only indirectly covers CI implementation."
+      "assessment": "Direct verification/publication case is unrun; contract case covers CI indirectly."
     },
     {
       "id": "spring-boot-codegen",
@@ -281,7 +297,7 @@
       "liveComparativeResults": [],
       "marginalUsefulness": "unmeasured",
       "tokenCostEvidence": "unavailable",
-      "assessment": "Two new cases unrun; missing capability never counts as positive success."
+      "assessment": "Cases use a mocked initialize_project by default; live generation needs --mocks off and an explicit tool grant. Unrun."
     },
     {
       "id": "spring-boot-load-testing",
@@ -413,7 +429,9 @@
         "positiveTask": [
           "test-writer-behavior"
         ],
-        "negativeTask": [],
+        "negativeTask": [
+          "no-hijack-plain-junit"
+        ],
         "indirect": []
       },
       "activationProvenByTaskRelevance": false,
@@ -571,7 +589,7 @@
       "purpose": "Risk-driven test sources within test-only ownership",
       "behavioralCases": {
         "positiveTask": [
-          "test-writer-behavior"
+          "test-writer-agent"
         ],
         "negativeTask": [],
         "indirect": []
@@ -584,7 +602,7 @@
       "liveComparativeResults": [],
       "marginalUsefulness": "unmeasured",
       "tokenCostEvidence": "unavailable",
-      "assessment": "Relevant task case does not prove specialist delegation occurred."
+      "assessment": "Only test-writer-agent grades a dispatch of this agent (Agent tool allowed, dispatch indicator); test-writer-behavior does not allow Agent and cannot exercise it."
     },
     {
       "id": "initialize_project",
@@ -623,7 +641,8 @@
       "activationProvenByTaskRelevance": false,
       "deterministicEvidencePaths": [
         "tests/project-runtime/regressions.py",
-        "tests/mcp/source-inspection-regression.test.js"
+        "tests/mcp/source-inspection-regression.test.js",
+        "tests/mcp/host-boundary-regression.test.js"
       ],
       "automatedSelectedMinus": false,
       "liveComparativeResults": [],
@@ -710,7 +729,8 @@
       "activationProvenByTaskRelevance": false,
       "deterministicEvidencePaths": [
         "tests/mcp/server.test.js",
-        "tests/mcp/source-inspection-regression.test.js"
+        "tests/mcp/source-inspection-regression.test.js",
+        "tests/mcp/host-boundary-regression.test.js"
       ],
       "automatedSelectedMinus": false,
       "liveComparativeResults": [],
@@ -732,7 +752,8 @@
       },
       "activationProvenByTaskRelevance": false,
       "deterministicEvidencePaths": [
-        "tests/mcp/server.test.js"
+        "tests/mcp/server.test.js",
+        "tests/mcp/host-boundary-regression.test.js"
       ],
       "automatedSelectedMinus": false,
       "liveComparativeResults": [],
@@ -926,5 +947,32 @@
       "tokenCostEvidence": "unavailable",
       "assessment": "Manifest validation cannot prove installed server or editor behavior. No automated LSP ablation."
     }
+  ],
+  "explicitActivationCriteria": [
+    "evals/api-contracts-error-shape/graders/skill-fired.md",
+    "evals/applied-migration/graders/skill-fired.md",
+    "evals/bad-migration-name/graders/skill-fired.md",
+    "evals/boot4-tracing/graders/skill-fired.md",
+    "evals/build-run-module-failure/graders/skill-fired.md",
+    "evals/ci-verify-gate/graders/skill-fired.md",
+    "evals/codegen-controller/graders/skill-fired.md",
+    "evals/contract-release-cycle/graders/skill-fired.md",
+    "evals/cookie-bearer-security/graders/skill-fired.md",
+    "evals/gatling-profile/graders/skill-fired.md",
+    "evals/initializr-existing-project-refusal/graders/no-initialize-call.md",
+    "evals/initializr-positive/graders/guarded-call.md",
+    "evals/initializr-positive/graders/skill-fired.md",
+    "evals/jwt-api/graders/skill-fired.md",
+    "evals/load-acceptance-cycle/graders/skill-fired.md",
+    "evals/migration-compatibility-gates/graders/skill-fired.md",
+    "evals/modulith-boundaries/graders/skill-fired.md",
+    "evals/no-hijack-generic-java/graders/no-plugin-skill-fired.md",
+    "evals/no-hijack-node-ci/graders/no-plugin-skill-fired.md",
+    "evals/no-hijack-plain-junit/graders/no-plugin-skill-fired.md",
+    "evals/no-monitor-readiness/graders/skill-fired.md",
+    "evals/performance-evidence-first/graders/skill-fired.md",
+    "evals/postgres18-volume/graders/skill-fired.md",
+    "evals/test-writer-agent/graders/agent-dispatched.md",
+    "evals/test-writer-behavior/graders/skill-fired.md"
   ]
 }

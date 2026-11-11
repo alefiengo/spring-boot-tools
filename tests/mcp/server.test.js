@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const readline = require('node:readline');
 const http = require('node:http');
 const entry = path.resolve(__dirname, '../../mcp-server/index.js');
+const { removeBuildState } = require('./build-state.cjs');
 
 async function fixture(t, files, env = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-regression-')));
@@ -30,7 +31,13 @@ async function fixture(t, files, env = {}) {
     pending.set(id, data => { clearTimeout(timer); data.error ? reject(new Error(data.error.message)) : resolve(data.result); });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   });
-  t.after(async () => { child.kill(); await fs.rm(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    const exited = new Promise(resolve => child.once('close', resolve));
+    child.kill();
+    if (child.exitCode === null) await exited;
+    removeBuildState(root);
+    await fs.rm(root, { recursive: true, force: true });
+  });
   const initialized = await request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'regression', version: '1' } });
   assert.equal(initialized.protocolVersion, '2025-11-25');
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');

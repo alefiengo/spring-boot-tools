@@ -1,6 +1,6 @@
 # Working on spring-boot-tools
 
-This repository ships a Claude Code plugin, not a Spring Boot application.
+This repository ships a plugin for Claude Code and Codex, not a Spring Boot application.
 Read `CONTRIBUTING.md` and `docs/architecture.md` before changing executable behavior.
 The agents in `agents/` and skills in `skills/` are shipped product components;
 do not repurpose them as the team maintaining this repository.

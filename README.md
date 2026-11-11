@@ -62,7 +62,7 @@ For local use, clone the plugin and install its server dependencies:
 
 ```bash
 git clone https://github.com/alefiengo/spring-boot-tools ~/dev/spring-boot-tools
-npm ci --prefix ~/dev/spring-boot-tools/mcp-server
+npm ci --prefix ~/dev/spring-boot-tools
 cd /path/to/your/spring-project
 claude --plugin-dir ~/dev/spring-boot-tools
 ```
@@ -87,9 +87,16 @@ claude plugin marketplace add https://github.com/alefiengo/spring-boot-tools
 claude plugin install spring-boot-tools@spring-boot-tools-marketplace
 ```
 
-Install the MCP dependencies with `npm ci` in the installed plugin's
-`mcp-server/` directory. A team can enable the plugin in its application's
-`.claude/settings.json`:
+Claude Code installs the MCP dependencies itself when it copies the plugin
+from a marketplace: `package.json` and `package-lock.json` sit at the plugin
+root, where its automatic installer looks. If the install is skipped or
+fails, `/plugin` shows a note and the MCP server cannot start; run `npm ci` in
+the installed plugin root
+(`~/.claude/plugins/cache/spring-boot-tools-marketplace/spring-boot-tools/<version>/`)
+and `/reload-plugins`. With `--plugin-dir` or a marketplace added from a local
+path, the plugin loads in place and nothing is installed for you: run
+`npm ci` in the plugin root yourself, as shown above. A team can enable the
+plugin in its application's `.claude/settings.json`:
 
 ```json
 {
@@ -99,21 +106,44 @@ Install the MCP dependencies with `npm ci` in the installed plugin's
 }
 ```
 
+### Codex
+
+Codex needs a local executor and the bundled launcher; it does not load the
+Claude hooks or agents. Install the dependencies with
+`npm ci --prefix /absolute/path/to/spring-boot-tools`, register a local
+marketplace as described in [Codex support](docs/codex.md), then start Codex in
+the application workspace:
+
+```bash
+node /absolute/path/to/spring-boot-tools/codex/run.mjs -C /absolute/path/to/application
+```
+
+Starting bare `codex` does not work unless `SBT_PLUGIN_ROOT` is set to the
+absolute plugin path. The manifests were validated with Claude Code 2.1.322 and
+the Codex protocol checks ran against Codex CLI 0.167.0; other versions have
+not been verified.
+
+### Configuration
+
 Configure `app_port` through the plugin configuration. It defaults to 8080
 and supplies the default application port for Actuator inspection. Project
 build files determine the build tool and dependency versions.
 
-## Update to v0.3.0
+## Update to v0.4.0
 
-See the [v0.3.0 release](https://github.com/alefiengo/spring-boot-tools/releases/tag/v0.3.0)
-for installation diagnostics, shared migration lint and evaluation tooling.
-The former `post-edit-compile` hook is removed; Stop verification still checks
-current inputs, including external edits. Codex verification remains explicit.
+See the [v0.4.0 release](https://github.com/alefiengo/spring-boot-tools/releases/tag/v0.4.0)
+and the [changelog](CHANGELOG.md) for compatibility changes: Actuator and
+OpenAPI inspection accept only loopback hosts, build state moves to
+`~/.cache/spring-boot-tools/`, and the design agents return documents instead
+of writing files. Codex verification remains explicit.
 
 Update your installed plugin and restart the host so it reloads the manifests
-and MCP server. Run `npm ci` in the installed `mcp-server/` directory, then use
-the installation doctor above to check the bundle and workspace. Do not copy
-hook registrations from an older version into the updated installation.
+and MCP server. The dependency manifest and lockfile moved from `mcp-server/`
+to the plugin root: a marketplace update installs them automatically, while a
+checkout used with `--plugin-dir` needs `npm ci` in its root (remove a leftover
+`mcp-server/node_modules`; the doctor warns about it). Then use the
+installation doctor above to check the bundle and workspace. Do not copy hook
+registrations from an older version into the updated installation.
 
 ## Skills
 
@@ -147,8 +177,8 @@ changes.
 
 | Agent | Responsibility | Output permissions |
 |---|---|---|
-| `sb-architect` | Domain design, boundaries and implementation planning | Design documents |
-| `sb-api-designer` | Routes, payloads, errors and API contracts | Contract documents |
+| `sb-architect` | Domain design, boundaries and implementation planning | Read-only; returns the design document as its final message |
+| `sb-api-designer` | Routes, payloads, errors and API contracts | Read-only; returns the contract document as its final message |
 | `sb-code-reviewer` | Correctness, security and maintainability | Read-only |
 | `sb-runtime-reviewer` | Transactions, query paths, concurrency and N+1 | Read-only |
 | `sb-migration-reviewer` | Migration history, compatibility and locking | Read-only |
@@ -174,15 +204,25 @@ need no application build or application reviewers.
 
 Static inventories describe available source evidence. Runtime endpoints and
 configured database inspection provide additional evidence when requested.
+`actuator_health` and `openapi_endpoints` only contact the local application
+(`localhost`, `127.0.0.0/8` or `::1`); another host is rejected. A 5xx response
+body that is not a health document is not returned, and ports that the fetch
+standard blocks (for example 6666 or 10080) cannot be inspected over HTTP.
 
 ## Automatic hooks
 
 | Hook | Event | Behavior |
 |---|---|---|
-| `guard-secrets` | Before Write/Edit | Inspect proposed configuration for hard-coded credentials |
-| `guard-ddl` | Before Write/Edit | Reject destructive Hibernate schema settings outside recognized development configuration |
+| `guard-secrets` | Before Write/Edit | Inspect proposed configuration for newly introduced hard-coded credentials; asks for confirmation instead of denying in test paths |
+| `guard-ddl` | Before Write/Edit | Reject newly introduced destructive Hibernate schema settings outside recognized development configuration; `src/test/**`, `*-test.*` and `application-test*` are exempt |
 | `lint-migration` | After Write/Edit | Check migration names and flag destructive SQL |
-| `verify-on-stop` | Stop | Run or reuse an equivalent successful Maven verify / Gradle check |
+| `verify-on-stop` | Stop | Run or reuse an equivalent successful Maven verify / Gradle check; when Claude is already continuing because of a Stop hook it reports the result without blocking again |
+
+The edit guards compare the proposed content with the current file, so an
+unrelated edit is not blocked by a value that was already there; only a
+literal the edit introduces is flagged. Discovery errors other than "no
+project found" (for example an untrusted directory) are reported as a notice
+instead of being skipped silently.
 
 Verification reuse requires matching project inputs, task, module and
 profiles. Failed/cancelled builds and compile/test-only results cannot satisfy
@@ -216,7 +256,8 @@ Versioned top-level directories and configuration files:
 | `docs/` | Architecture, shared runtime behavior and operational limits |
 | `evals/` | Behavioral prompts, graders, fixtures and frozen-response judge tooling |
 | `hooks/` | Event registration, Bash launchers and Python hook implementation |
-| `mcp-server/` | Node.js MCP server, package metadata and dependency lockfile |
+| `mcp-server/` | Node.js MCP server (ES module scope marker only; dependencies live in the root `package.json`) |
+| `package.json`, `package-lock.json` | MCP server dependencies and lockfile at the plugin root, where Claude Code's automatic installer looks |
 | `runtime/` | Shared project discovery, build execution and local gate records |
 | `scripts/` | Offline installation diagnostics |
 | `skills/` | Task guidance in one `SKILL.md` per skill |

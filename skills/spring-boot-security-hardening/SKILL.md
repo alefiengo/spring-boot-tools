@@ -41,10 +41,10 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         return http
-            .cors(Customizer.withDefaults()) // provide a CorsConfigurationSource bean
+            .cors(Customizer.withDefaults()) // uses the bean named "corsConfigurationSource"
             .csrf(csrf -> csrf.disable()) // header-only bearer authentication
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/actuator/health").permitAll()
+                .requestMatchers("/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness").permitAll()
                 .requestMatchers("/api/v1/admin/**").hasAuthority("SCOPE_admin")
                 .anyRequest().authenticated())
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -60,7 +60,7 @@ For opaque tokens instead, use `oauth2.opaqueToken(token -> token.introspector(i
 
 ```java
 @Bean
-UrlBasedCorsConfigurationSource corsConfig() {
+CorsConfigurationSource corsConfigurationSource() { // Spring Security looks this bean up by name
     var source = new UrlBasedCorsConfigurationSource();
     var config = new CorsConfiguration();
     config.setAllowedOrigins(List.of(

@@ -4,22 +4,31 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import pwd
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / 'runtime/project_runtime.py'
 sys.path.insert(0, str(RUNTIME.parent))
+import project_runtime
 from project_runtime import discover, build_plan, run_build, state_dir, test_report_snapshot
+
+
+def state_path(root):
+    """Expected location: per-user cache from the password database, never TMPDIR/HOME."""
+    key = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / '.cache/spring-boot-tools' / f'build-{key}'
 
 
 class RuntimeTests(unittest.TestCase):
     def test_legacy_mark_discovers_without_writing_state(self):
-        key = hashlib.sha256(str(self.root).encode()).hexdigest()
-        folder = Path(tempfile.gettempdir()) / f'sb-tools-build-{os.getuid()}-{key}'
+        folder = state_path(self.root)
         self.assertFalse(folder.exists())
         result = self.invoke(action='mark')
         self.assertEqual(result['root'], str(self.root))
@@ -107,6 +116,7 @@ class RuntimeTests(unittest.TestCase):
         self.fixture = tempfile.TemporaryDirectory()
         self.addCleanup(self.fixture.cleanup)
         self.root = Path(self.fixture.name).resolve()
+        self.addCleanup(shutil.rmtree, state_path(self.root), ignore_errors=True)
         (self.root / 'target').mkdir()
         (self.root / 'pom.xml').write_text('<project/>')
         (self.root / 'src/main/java').mkdir(parents=True)
@@ -120,7 +130,7 @@ class RuntimeTests(unittest.TestCase):
         return {'action': 'run', 'projectRoot': str(self.root), 'task': 'verify', **extra}
 
     def invoke(self, **extra):
-        proc = subprocess.run([sys.executable, str(RUNTIME)], input=json.dumps(self.request(**extra)), capture_output=True, text=True)
+        proc = subprocess.run([sys.executable, str(RUNTIME)], input=json.dumps(self.request(**extra)), capture_output=True, text=True, timeout=60)
         self.assertIn(proc.returncode, (0, 1), proc.stderr)
         return json.loads(proc.stdout)
 
@@ -305,6 +315,195 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(result['cacheable'])
         self.assertIn('safety limit', result['cacheDiagnostic'])
         self.assertFalse(self.invoke()['reused'])
+
+    def ancestor_fixture(self, shared_mode):
+        shared = self.root / 'shared'
+        victim = shared / 'victim'
+        victim.mkdir(parents=True)
+        (victim / 'pom.xml').write_text('<project/>')
+        wrapper = victim / 'mvnw'
+        wrapper.write_text('#!/bin/sh\necho own >> ../../target/calls\nexit 0\n')
+        wrapper.chmod(0o755)
+        (shared / 'pom.xml').write_text('<project><modules><module>victim</module></modules></project>')
+        (shared / 'mvnw').write_text('#!/bin/sh\necho planted >> ../target/calls\nexit 0\n')
+        self.addCleanup(shutil.rmtree, state_path(victim), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, state_path(shared), ignore_errors=True)
+        shared.chmod(shared_mode)
+        self.addCleanup(shared.chmod, 0o755)
+        return shared, victim
+
+    def test_untrusted_ancestor_reactor_and_wrapper_are_never_used(self):
+        shared, victim = self.ancestor_fixture(0o1777)  # like /tmp: other users can plant files
+        info = discover(victim)
+        self.assertEqual(info['root'], str(victim))
+        self.assertIn(f'Ignored enclosing Maven reactor {shared}', info['discoveryWarnings'][0])
+        self.assertIn('writable by all users', info['discoveryWarnings'][0])
+        result = self.invoke(projectRoot=str(victim))
+        self.assertTrue(result['ok'])
+        self.assertIn('Ignored enclosing Maven reactor', result['discoveryWarnings'][0])
+        self.assertEqual(self.calls(), ['own'])
+        notes = shared / 'notes'
+        notes.mkdir()
+        with self.assertRaisesRegex(ValueError, 'untrusted ancestor'):
+            discover(notes)
+        self.assertIn('untrusted ancestor', self.invoke(projectRoot=str(notes))['error'])
+        self.assertEqual(self.calls(), ['own'])
+        shared.chmod(0o755)
+        (shared / 'mvnw').chmod(0o666)  # world-writable wrapper
+        with self.assertRaisesRegex(ValueError, 'untrusted ancestor'):
+            discover(notes)
+        self.assertEqual(discover(victim)['root'], str(victim))
+
+    def test_trusted_ancestor_reactor_is_still_shared(self):
+        shared, victim = self.ancestor_fixture(0o755)
+        info = discover(victim)
+        self.assertEqual(info['root'], str(shared))
+        self.assertNotIn('discoveryWarnings', info)
+
+    def test_build_configuration_directories_are_trust_inputs(self):
+        shared, victim = self.ancestor_fixture(0o755)
+        for relative in ('.mvn/extensions.xml', '.mvn/jvm.config', '.mvn/wrapper/maven-wrapper.properties',
+                         'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties'):
+            with self.subTest(relative=relative):
+                path = shared / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('')
+                path.chmod(0o666)
+                info = discover(victim)
+                self.assertEqual(info['root'], str(victim))
+                self.assertIn(relative.split('/')[-1], info['discoveryWarnings'][0])
+                path.chmod(0o644)
+                self.assertEqual(discover(victim)['root'], str(shared))
+        (shared / '.mvn').chmod(0o777)
+        self.addCleanup((shared / '.mvn').chmod, 0o755)
+        self.assertEqual(discover(victim)['root'], str(victim))
+
+    def test_wsl_drive_advice(self):
+        mounts = ('C:\\ /mnt/c 9p rw,noatime,aname=drvfs;path=C:\\;uid=1000;gid=1000 0 0\n'
+                  'D:\\ /mnt/d 9p rw,aname=drvfs;path=D:\\;metadata;uid=1000 0 0\n'
+                  'E: /mnt/e drvfs rw,metadata 0 0\n'
+                  '/dev/sdc / ext4 rw,relatime 0 0\n')
+        self.assertTrue(project_runtime.drvfs('/mnt/c/Users/me/app', mounts))
+        self.assertFalse(project_runtime.drvfs('/home/me/app', mounts))
+        self.assertFalse(project_runtime.drvfs('/mnt/cache/app', mounts))
+        self.assertFalse(project_runtime.drvfs('/mnt/d/app', mounts))
+        self.assertFalse(project_runtime.drvfs('/mnt/e/app', mounts))
+        shared, victim = self.ancestor_fixture(0o777)
+        with patch.object(project_runtime, 'drvfs', return_value=True):
+            warning = discover(victim)['discoveryWarnings'][0]
+        self.assertIn('"metadata" option', warning)
+        self.assertIn('/etc/wsl.conf', warning)
+        self.assertNotIn('metadata', discover(victim)['discoveryWarnings'][0])
+
+    def test_group_write_only_for_user_private_group(self):
+        path = self.root / 'pom.xml'
+        path.chmod(0o664)
+        project_runtime.private_group.cache_clear()
+        self.addCleanup(project_runtime.private_group.cache_clear)
+        user = pwd.getpwuid(os.getuid()).pw_name
+        for platform, members, name, trusted in (('linux', [], user, True), ('linux', [user], user, True),
+                                                  ('linux', ['other'], user, False), ('linux', [], 'staff', False),
+                                                  ('darwin', [], user, False)):
+            with self.subTest(platform=platform, members=members, name=name):
+                project_runtime.private_group.cache_clear()
+                group = type('Group', (), {'gr_name': name, 'gr_mem': members})()
+                with patch.object(project_runtime.sys, 'platform', platform), \
+                        patch.object(project_runtime.grp, 'getgrgid', return_value=group):
+                    self.assertEqual(project_runtime.trusted(path), trusted)
+
+    def run_with_user_database(self, code, home=None):
+        """Run the runtime CLI in a child whose user lookup fails or points elsewhere."""
+        script = '''import io, json, pwd, runpy, sys
+mode, home = sys.argv[1], sys.argv[2]
+real = pwd.getpwuid
+def lookup(uid):
+    if mode == 'missing':
+        raise KeyError(f'getpwuid(): uid not found: {uid}')
+    return type('Entry', (), {'pw_dir': home, 'pw_name': real(uid).pw_name})()
+pwd.getpwuid = lookup
+runpy.run_path(sys.argv[3], run_name='__main__')
+'''
+        # Outside the project: state inside it would change the input fingerprint.
+        tmp = Path(self.outside.name) / 'tmp'
+        tmp.mkdir(exist_ok=True)
+        proc = subprocess.run([sys.executable, '-c', script, code, str(home or ''), str(RUNTIME)],
+                              input=json.dumps(self.request()), capture_output=True, text=True, timeout=60,
+                              env=dict(os.environ, TMPDIR=str(tmp)))
+        return json.loads(proc.stdout), tmp / f'spring-boot-tools-{os.getuid()}'
+
+    def test_state_without_user_database_or_home_falls_back_privately(self):
+        self.outside = tempfile.TemporaryDirectory()
+        self.addCleanup(self.outside.cleanup)
+        result, fallback = self.run_with_user_database('missing')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(fallback.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(any(fallback.iterdir()))
+        result, _ = self.run_with_user_database('home', Path(self.outside.name) / 'absent-home')
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(self.run_with_user_database('missing')[0]['reused'])
+        unsafe = Path(self.outside.name) / 'unsafe-home'
+        (unsafe / '.cache').mkdir(parents=True)
+        (unsafe / '.cache').chmod(0o777)
+        result, _ = self.run_with_user_database('home', unsafe)
+        self.assertIn('Unsafe build state cache directory', result['error'])
+
+    def test_gradle_ancestor_settings_require_trust_and_membership(self):
+        (self.root / 'pom.xml').unlink()
+        shared = self.root / 'shared'
+        app = shared / 'app'
+        app.mkdir(parents=True)
+        (app / 'build.gradle').write_text('')
+        (shared / 'settings.gradle').write_text('include(":other")')
+        self.assertEqual(discover(app)['root'], str(shared))  # no own wrapper: Gradle uses the ancestor
+        (app / 'gradlew').write_text('#!/bin/sh\n')
+        self.assertEqual(discover(app)['root'], str(app))  # own wrapper and not an included project
+        (shared / 'settings.gradle').write_text('include(":app")')
+        self.assertEqual(discover(app)['root'], str(shared))
+        shared.chmod(0o1777)
+        self.addCleanup(shared.chmod, 0o755)
+        self.assertEqual(discover(app)['root'], str(app))
+
+    def test_utf16_doctype_pom_refused(self):
+        (self.root / 'pom.xml').write_bytes('<?xml version="1.0" encoding="UTF-16"?>\n<!DOCTYPE project [<!ENTITY m "evil">]><project><modules><module>&m;</module></modules></project>'.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'Unsafe or oversized POM'):
+            discover(self.root)
+
+    def test_lock_is_shared_across_tmpdir_values(self):
+        self.wrapper.write_text('#!/bin/sh\necho start >> target/calls\nsleep .3\necho end >> target/calls\n')
+        processes = []
+        for name in ('a', 'b'):
+            tmp = self.root / ('tmp-' + name)
+            tmp.mkdir()
+            proc = subprocess.Popen([sys.executable, str(RUNTIME)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    text=True, env=dict(os.environ, TMPDIR=str(tmp)))
+            proc.stdin.write(json.dumps(self.request(task='compile')))
+            proc.stdin.close()
+            proc.stdin = None
+            processes.append(proc)
+        for proc in processes:
+            self.assertTrue(json.loads(proc.communicate(timeout=10)[0])['ok'])
+        self.assertEqual(self.calls(), ['start', 'end', 'start', 'end'])
+        self.assertEqual(state_dir(self.root), state_path(self.root))
+
+    def test_unsafe_state_directory_refused(self):
+        folder = state_dir(self.root)
+        folder.chmod(0o755)
+        result = self.invoke()
+        self.assertIn('Unsafe shared build state directory', result['error'])
+        self.assertFalse((self.root / 'target/calls').exists())
+
+    def test_special_report_files_never_block(self):
+        reports = self.root / 'target/surefire-reports'
+        reports.mkdir()
+        os.mkfifo(reports / 'TEST-blocking.xml')
+        (reports / 'TEST-real.xml').write_text('<testsuite tests="1"/>')
+        start = time.monotonic()
+        result = self.invoke(task='test', collectTestReports=True, timeoutMs=5000)
+        self.assertLess(time.monotonic() - start, 4)
+        self.assertTrue(result['ok'], result)
+        self.wrapper.write_text('#!/bin/sh\nmkfifo target/surefire-reports/TEST-new.xml\necho "<testsuite/>" > target/surefire-reports/TEST-fresh.xml\n')
+        result = self.invoke(task='test', collectTestReports=True, timeoutMs=5000)
+        self.assertEqual([Path(report['file']).name for report in result['testReports']], ['TEST-fresh.xml'])
 
     def test_symlink_inputs_fail_safe(self):
         self.source.unlink()

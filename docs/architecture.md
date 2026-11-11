@@ -4,7 +4,12 @@
 
 `.claude-plugin/plugin.json` describes the plugin and its `app_port` option.
 The marketplace points to this plugin. `.mcp.json` launches the Node.js server
-with the project root and application port; `hooks/hooks.json` registers Bash
+with the project root (`PROJECT_ROOT`, set from `CLAUDE_PROJECT_DIR`) and the
+application port; it sets no `cwd`, because Claude Code resolves `${...}` only
+in a stdio server's `command`, `args` and `env`. The server's dependencies are
+declared in the root `package.json`/`package-lock.json`, where Claude Code's
+automatic dependency installer reads them; `mcp-server/package.json` only marks
+the directory as an ES module scope; `hooks/hooks.json` registers Bash
 launchers backed by a Python standard-library hook implementation. `.lsp.json`
 registers an optional externally installed Java language server.
 
@@ -34,10 +39,33 @@ wrappers, validates supported tasks and constructs argument arrays. Wrappers
 are preferred to global installations. Requested modules/profiles determine
 execution scope.
 
-Each project has a machine-local build lock and records in a private temporary
-state directory. Plugin builds acquire that lock before executing. Timeouts,
-cancellation and output limits terminate the build process tree; failed or
-cancelled attempts invalidate reusable verification success.
+Each project has a machine-local build lock and records in a private per-user
+state directory, `~/.cache/spring-boot-tools/build-<sha256 of the project
+root>`. The home directory comes from the user database, not from `TMPDIR`,
+`HOME` or `XDG_*`, so hooks, MCP and Codex agree on one lock even when their
+environments differ. The state directories must be owned by the current
+user with mode 0700 (and `~/.cache` owned by the user and not world-writable)
+or the runtime refuses them. Plugin builds acquire that lock before executing. Timeouts, cancellation and output limits terminate the
+build process tree; failed or cancelled attempts invalidate reusable
+verification success. When the MCP server is stopped (SIGINT, SIGTERM or
+SIGHUP) it terminates the builds in progress before exiting. On Linux a hook's
+build also receives SIGTERM if the hook process dies (`PR_SET_PDEATHSIG`);
+macOS has no equivalent, so a build started by a killed hook can outlive it
+until its own timeout.
+
+Project root discovery walks up from the starting directory. The starting
+directory is the caller's choice; an ancestor build directory is used only when
+the current user owns it and its build files and wrappers and no other user can
+write them, otherwise discovery refuses it with an explicit error. An enclosing
+Maven reactor or Gradle settings directory becomes the root only under the same
+condition and only when it declares the project: a Maven reactor must list it
+as a module, and Gradle settings must include it when the project has its own
+`gradlew` (without one, Gradle itself uses the enclosing settings). An enclosing
+build refused for its permissions is reported in `discoveryWarnings` and the
+nearer project is built alone. The trust check covers build and settings files,
+wrappers, `gradle.properties`, `.mvn/**` and `gradle/wrapper/*`. The
+installation doctor warns with `discovered_root` when the intended project is
+discovered inside a larger root.
 
 `run_tests` snapshots report metadata and contents before and after execution
 inside the lock. It returns summaries of fresh reports and structured test
@@ -59,8 +87,10 @@ scope. Use a root test invocation to collect the whole reactor's reports.
 ## Verification reuse
 
 The Stop hook requests Maven `verify` or Gradle `check` against current input
-fingerprints. No post-edit marker or build is required. MCP and PR review
-can share a completed equivalent verification gate.
+fingerprints. No post-edit marker or build is required. When Claude is already
+continuing because of a Stop hook (`stop_hook_active`), the hook still
+verifies but reports the result without blocking again. Discovery errors other
+than "no project found" are reported as a notice. MCP and PR review can share a completed equivalent verification gate.
 
 Reuse requires successful full verification with unchanged inputs and matching
 build tool, task, module, test filter and profile scope. Compilation or a test
@@ -89,13 +119,19 @@ The legacy runtime CLI action `mark` returns project discovery plus a
 deprecation diagnostic without writing state. Old pending-marker files are
 ignored; successful verification reuse depends only on scope and fingerprints.
 
-Runtime OpenAPI and Actuator inspection use explicit URLs and report access,
-endpoint and application failures separately. Migration database status
-requires an explicitly requested mode and the application's configured Flyway
-plugin/database. Local migration lint does not prove database compatibility.
+Runtime OpenAPI and Actuator inspection accept only loopback targets
+(`localhost`, `127.0.0.0/8` or `::1`) and report access, endpoint and
+application failures separately. A 5xx body that is not a health document is
+not returned, and ports blocked by the fetch standard cannot be inspected.
+Migration database status requires an explicitly requested mode and the
+application's configured Flyway plugin/database. Local migration lint does not prove database compatibility.
 
-Secret and DDL hooks are heuristic configuration guards. Reviewers depend on
-the caller for diffs and executable build evidence. See
+Secret and DDL hooks are heuristic configuration guards. They compare the
+proposed content with the current file and flag only literals the edit
+introduces. The secret guard asks for confirmation instead of denying in test
+paths, and the DDL guard exempts `src/test/**`, `*-test.*` and
+`application-test*` files. Reviewers depend on the caller for diffs and
+executable build evidence. See
 [SECURITY.md](../SECURITY.md) for trust boundaries.
 
 ## Validation layers

@@ -9,7 +9,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Plugin version, Claude Code version, OS, and relevant Node/Python/JDK/build-tool versions.
+      description: Plugin version, host (Claude Code or Codex) and its version, OS, and relevant Node/Python/JDK/build-tool versions.
     validations:
       required: true
   - type: dropdown
@@ -19,6 +19,7 @@ body:
       options:
         - Skill or agent
         - Hook or shared build runtime
+        - Codex adapter
         - MCP tool
         - Installation or documentation
     validations:

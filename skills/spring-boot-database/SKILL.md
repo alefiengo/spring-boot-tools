@@ -1,11 +1,13 @@
 ---
 name: spring-boot-database
 description: >
-  Review or create Spring Boot database migrations, including existing SQL
-  files under db/migration, Flyway filename conventions, version ordering,
-  and validation/checksum failures. Use when asked whether a migration file
-  is OK or how to name it, as well as for schema design, JPA entities,
-  queries, indexes, connection issues, locks, or slow queries.
+  Flyway migrations and relational schema for Spring Boot: review or create
+  files under db/migration, naming and version order, checksum/validation
+  failures, evolving applied migrations, table/constraint/index design,
+  entity-to-schema mapping and native queries. Use when asked whether a
+  migration is correct, how to name or evolve it, how a schema should change,
+  or to diagnose database connection failures and locks. For slow endpoints,
+  N+1 queries or pool sizing use spring-boot-performance.
 ---
 
 # Database in Spring Boot
@@ -14,9 +16,7 @@ Guide for Flyway migrations, table design, JPA entities, naming conventions, and
 
 > Inspect the project database, schema, migration configuration and managed dependency versions first. The JPA 3.2 / Hibernate 7 and PostgreSQL examples below are conditional; adapt them to the actual project rather than changing its stack.
 
-## Activation
-
-Use when asked to create or review SQL migrations, check migration filenames and version order, investigate Flyway validation/checksum failures, create or modify tables, design JPA entities, write native queries, review schemas, or diagnose database problems. Existing migration files under `db/migration` also qualify when the user requests a review or correction.
+## Scope
 
 To load these conventions explicitly in Claude Code, invoke `/spring-boot-tools:spring-boot-database` with the migration review request. Automatic selection depends on the model; an answer about a simple naming question may otherwise be produced without loading the skill.
 
@@ -55,7 +55,7 @@ V<version>__<short_description>.sql
 ### Writing rules
 
 - **Versioned migrations run once**: let unexpected schema differences fail instead of hiding them with `IF NOT EXISTS`. Use repeatable migrations deliberately for replaceable objects.
-- **Transactions depend on the database and SQL**. For PostgreSQL `CREATE INDEX CONCURRENTLY`, isolate the statement and add a sibling `V4__add_index.sql.conf` containing `executeInTransaction=false`. Configure PostgreSQL transactional locking appropriately for the selected Flyway version; test the migration on a representative database.
+- **Transactions depend on the database and SQL**. For PostgreSQL `CREATE INDEX CONCURRENTLY`, isolate the statement and add a sibling `V4__add_index.sql.conf` containing `executeInTransaction=false`. Also set `spring.flyway.postgresql.transactional-lock=false` (Flyway `postgresql.transactionalLock`) so Flyway uses a session-level advisory lock; otherwise the concurrent index build can wait indefinitely. Test the migration on a representative database.
 - **Recovery**: select a tested forward fix, restore, or compatible application rollback from the actual data and deployment constraints. An inverse migration is an option only when its data effects are understood; it cannot recover discarded data by itself.
 - **Applied versioned migrations are immutable**: retain their names and contents. Add a new versioned migration for every change. `repair` changes history metadata, not the schema; use it only after investigating and reconciling an explicitly understood failure, with backups and the same locations used by `migrate`.
 
@@ -80,7 +80,7 @@ CREATE UNIQUE INDEX uq_users_email ON users (email);
 
 ### EntityManager injection (JPA 3.2 / Hibernate 7)
 
-In Boot's JPA auto-configuration, `EntityManager` and `EntityManagerFactory` can be injected, with qualifier support for multiple persistence units. This is Spring configuration, not an injection feature introduced by the JPA specification. `@PersistenceContext` remains valid; constructor injection of the Boot-provided shared EntityManager is also suitable for a single persistence unit. Do not create a shared EntityManager manually without a concrete need:
+Following the JPA 3.2 injection arrangement, Spring Framework 7's `LocalContainerEntityManagerFactoryBean` (auto-configured by Boot) exposes the shared `EntityManager` and `EntityManagerFactory` for `@Autowired`/constructor injection, with qualifier support for multiple persistence units. `@PersistenceContext` remains valid; constructor injection of the Boot-provided shared EntityManager is also suitable for a single persistence unit. Do not create a shared EntityManager manually without a concrete need:
 
 ```java
 @Service

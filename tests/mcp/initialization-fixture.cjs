@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const readline = require('node:readline');
 const repo = path.resolve(__dirname, '../..');
+const { removeBuildState } = require('./build-state.cjs');
 
 exports.fixture = async (t, files = {}, transport = false, nodeArgs = []) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sbt-init-mcp-')));
@@ -55,6 +56,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
     const exited = new Promise(resolve => child.once('close', resolve));
     child.kill();
     if (child.exitCode === null) await exited;
+    removeBuildState(root);
     await fs.rm(root, { recursive: true, force: true });
   });
   const initialized = await request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'initialization-regression', version: '1' } });

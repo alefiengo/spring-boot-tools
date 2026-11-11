@@ -7,13 +7,14 @@ its project and user-option placeholders are Claude-specific.
 
 ## Install from a local checkout
 
-Use a local executor with Node.js meeting `mcp-server/package.json`'s engine
+Use a local executor with Node.js meeting the root `package.json`'s engine
 requirement, Python 3.11+, and the application's JDK/build prerequisites. The
 shared runtime currently supports Linux/macOS, not native Windows. Install
-the locked MCP dependencies before installing the plugin:
+the locked MCP dependencies, which live at the plugin root, before installing
+the plugin:
 
 ```bash
-npm ci --prefix /absolute/path/to/spring-boot-tools/mcp-server
+npm ci --prefix /absolute/path/to/spring-boot-tools
 ```
 
 Create a local marketplace outside the application and plugin directories.
@@ -36,7 +37,8 @@ Save this catalog as
     {
       "name": "spring-boot-tools",
       "source": { "source": "local", "path": "./spring-boot-tools" },
-      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" }
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Developer Tools"
     }
   ]
 }
@@ -65,6 +67,22 @@ For example:
 ```bash
 SPRING_BOOT_APP_PORT=8181 node /absolute/path/to/spring-boot-tools/codex/run.mjs -C /absolute/path/to/application
 ```
+
+On Linux/macOS, Codex CLI 0.167.0 starts an MCP process with only `HOME`,
+`LOGNAME`, `PATH`, `SHELL`, `USER`, `__CF_USER_TEXT_ENCODING`, `LANG`,
+`LC_ALL`, `TERM`, `TMPDIR` and `TZ`, nonempty CA bundle variables such as
+`SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS`, plus the names listed in
+`env_vars` (`DEFAULT_ENV_VARS` in
+[`codex-rs/rmcp-client/src/utils.rs`](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/rmcp-client/src/utils.rs)).
+Builds need the user's toolchain, so `codex/mcp.json` also forwards
+`JAVA_HOME`, `JDK_JAVA_OPTIONS`, `JAVA_TOOL_OPTIONS`, `MAVEN_OPTS`,
+`MAVEN_ARGS`, `MAVEN_USER_HOME`, `M2_HOME`, `GRADLE_OPTS`, `GRADLE_USER_HOME`
+and the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and
+lowercase forms); names that are unset stay absent. A build that
+needs a registry credential supplied through an environment variable (for
+example `ARTIFACTORY_TOKEN` in a Maven `settings.xml` or Gradle build) only
+sees it if you add that name to `env_vars` in `codex/mcp.json`; secrets are
+never forwarded by default.
 
 The server launcher sets `PROJECT_ROOT` to the actual MCP process cwd, ignoring
 stale inherited project variables. Shared Python discovery finds the project
@@ -194,7 +212,8 @@ argument/exit propagation. It makes no model calls and fetches no scaffolds.
 check. It uses an isolated temporary `CODEX_HOME` and local marketplace, reads
 the manifest, installs only in that temporary home, starts an empty thread and
 checks MCP inventory and application discovery. It never starts a model turn.
-The implementation was checked against Codex CLI 0.166.0; compatibility with
+The implementation was checked against Codex CLI 0.167.0 (the placeholder and
+environment behavior above was observed on 0.166.0 only); compatibility with
 other CLI versions and desktop UI flows needs separate verification. Neither
 these protocol checks nor deterministic tests certify model skill selection.
 

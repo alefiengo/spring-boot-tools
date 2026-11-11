@@ -169,8 +169,13 @@ Use Boot-configured HTTP client builders for outgoing propagation. Incoming requ
 ```java
 @Component
 public class OrderMetrics {
-    private final Counter createdOrders = Metrics.counter("orders.created");
-    private final Timer placementTime = Metrics.timer("orders.placement.time");
+    private final Counter createdOrders;
+    private final Timer placementTime;
+
+    public OrderMetrics(MeterRegistry registry) { // Boot-managed registry, not static Metrics
+        this.createdOrders = registry.counter("orders.created");
+        this.placementTime = registry.timer("orders.placement.time");
+    }
 
     public void onOrderCreated(Order o) {
         createdOrders.increment();

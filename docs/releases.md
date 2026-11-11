@@ -6,8 +6,8 @@ model evaluation is a prerequisite. Record the actual local evidence and its
 platform limits instead of claiming an unrun CI matrix.
 
 1. Create a release branch and select a semantic version. Align the Claude
-   manifest, marketplace entry, Codex manifest, MCP package, lockfile (both root
-   entries) and MCP server initialization version. Do not change dependency
+   manifest, marketplace entry, Codex manifest, root `package.json`, lockfile (both
+   root entries) and MCP server initialization version. Do not change dependency
    resolutions merely to bump the version.
 2. Move the unreleased changes into a versioned changelog entry. Update README
    installation or upgrade guidance and explain compatibility changes, including

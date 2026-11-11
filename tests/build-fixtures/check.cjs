@@ -68,7 +68,8 @@ async function check(tool) {
   // The MCP bridge removes this diagnostic endpoint setting before builds.
   delete env.SPRING_BOOT_APP_PORT;
   const key = crypto.createHash('sha256').update(root).digest('hex');
-  const state = path.join(os.tmpdir(), `sb-tools-build-${process.getuid()}-${key}`);
+  // The runtime keeps per-project state under the user database's home, never TMPDIR/HOME.
+  const state = path.join(os.userInfo().homedir, '.cache', 'spring-boot-tools', 'build-' + key);
   let client, failed = false;
   const log = text => console.log(`[${tool}] ${text}`);
   const runtime = async args => {

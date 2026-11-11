@@ -1,10 +1,12 @@
 ---
 name: spring-boot-initializr
 description: >
-  Scaffold a new Spring Boot project with Spring Initializr only on an explicit
-  user request. Never initialize inside an existing Boot project or its ancestor
-  project context, or into a nonempty target. Existing application edits belong
-  to the codegen/build skills.
+  Creates a new Spring Boot project from the official Spring Initializr
+  (start.spring.io) through the initialize_project tool. Use only when the
+  user explicitly asks to create, scaffold, bootstrap or generate a new Spring
+  Boot application in a new, absent directory. Never inside an existing
+  Maven/Gradle project or into an existing target; to add code to an existing
+  application use spring-boot-codegen.
 ---
 
 # Spring Boot Initializr

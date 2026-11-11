@@ -55,8 +55,18 @@ def definitions(case_dir):
     return entries
 
 
+def first_present(raw, *keys):
+    return next((raw[k] for k in keys if k in raw), None)
+
+
 def metrics(raw):
-    """Never estimate absent telemetry or combine generator and grader usage."""
+    """Never estimate absent telemetry or combine generator and grader usage.
+
+    Reads `claude -p --output-format json` keys (judge output) and the
+    `claude plugin eval` result keys. The documented eval result names
+    `costUsd` and `durationSeconds` at document level; per-run names are
+    not fixed by the documentation, so both spellings are accepted.
+    """
     usage = raw.get('usage') if isinstance(raw.get('usage'), dict) else {}
     aliases = {'inputTokens': ('input_tokens', 'inputTokens'),
                'outputTokens': ('output_tokens', 'outputTokens'),
@@ -68,13 +78,17 @@ def metrics(raw):
         if value is not None and (type(value) is not int or value < 0):
             raise ValueError('Invalid token telemetry')
         result[name] = {'status': 'measured' if value is not None else 'unavailable', 'value': value}
-    cost = raw.get('total_cost_usd', raw.get('costUSD'))
+    cost = first_present(raw, 'total_cost_usd', 'costUSD', 'costUsd')
     if cost is not None and (type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0):
         raise ValueError('Invalid cost telemetry')
     result['costUSD'] = {'status': 'measured' if cost is not None else 'unavailable', 'value': cost}
-    duration = raw.get('duration_ms', raw.get('durationMs'))
-    if duration is not None and (type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0):
-        raise ValueError('Invalid duration telemetry')
+    duration = first_present(raw, 'duration_ms', 'durationMs')
+    seconds = raw.get('durationSeconds') if duration is None else None
+    for value in (duration, seconds):
+        if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+            raise ValueError('Invalid duration telemetry')
+    if seconds is not None:
+        duration = seconds * 1000
     result['durationMs'] = {'status': 'measured' if duration is not None else 'unavailable',
                             'value': duration, 'source': 'reported' if duration is not None else None}
     resolved = raw.get('modelResolved', raw.get('model'))
@@ -115,8 +129,15 @@ def freeze(report, case_name, case_dir, run=0, arm='with', variant=None, provena
         raise ValueError('Expected nonempty complete response')
     criteria = [{'id': d['id'], 'criterion': d['criterion']} for d in defs if d['type'] == 'llm']
     current_prompt = body(case_dir / 'prompt.md')
-    if current_prompt != case['promptMarkdown'].strip():
+    recorded = case.get('promptMarkdown')
+    if not isinstance(recorded, str):
+        raise ValueError('Report lacks the case prompt (promptMarkdown); cannot verify it matches the case')
+    if current_prompt != recorded.strip():
         raise ValueError('Prompt changed: regenerate once before freezing; do not rejudge stale context')
+    limits = result.get('executionLimits', report.get('executionLimits'))
+    if limits is None and type(case.get('timeoutSeconds')) is int and type(case.get('maxTurns')) is int:
+        # Case-level limits recorded by the evaluator; neither has a CLI override.
+        limits = {'timeoutSeconds': case['timeoutSeconds'], 'maxTurns': case['maxTurns']}
     bundle = {'schemaVersion': 2, 'case': case_name, 'prompt': current_prompt,
               'response': response, 'criteria': criteria, 'criterionDefinitions': defs,
               'originalGraderResults': copy.deepcopy(graders),
@@ -125,15 +146,21 @@ def freeze(report, case_name, case_dir, run=0, arm='with', variant=None, provena
                              'startedAt': result.get('startedAt'), 'run': run, 'arm': arm,
                              'modelRequested': result.get('modelRequested', report.get('modelRequested')),
                              'effort': result.get('effort', report.get('effort')),
-                             'executionLimits': result.get('executionLimits', report.get('executionLimits')),
+                             'executionLimits': limits,
                              'sourceReportSha256': digest(report), 'metrics': metrics(result)}}
     for definition in defs:
         if definition['type'] == 'tool_used':
             matched = [g for g in graders if g.get('id', g.get('name')) == definition['id']]
             if len(matched) > 1:
                 raise ValueError('Duplicate activation result')
+            source = definition['source']
+            # Excluded from the two-arm score and reported as a with-arm indicator:
+            # every Skill tool_used grader and any arm: with-only grader, unless arm: both.
+            indicator = (not re.search(r'^arm: both$', source, re.M)
+                         and bool(re.search(r'^tool: Skill$|^arm: with-only$', source, re.M)))
             bundle['activationResults'].append({'id': definition['id'],
-                'falseActivationCriterion': bool(re.search(r'^max: 0$', definition['source'], re.M)),
+                'falseActivationCriterion': bool(re.search(r'^max: 0$', source, re.M)),
+                'indicatorOnly': indicator,
                 'result': matched[0] if matched else None})
     if provenance is not None:
         verify(provenance)
