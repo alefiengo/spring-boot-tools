@@ -1,6 +1,7 @@
 ---
 description: Explicit new-project request with guarded Initializr capability
 max_turns: 10
+allowed_tools: [Read, Glob, Grep, Skill]
 ---
 
 Create a new Spring Boot project in ./generated-orders, a currently absent child

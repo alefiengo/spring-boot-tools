@@ -142,7 +142,9 @@
     "id": "quoted-comment",
     "name": "V1__quoted-comment.sql",
     "sql": "SELECT '-- harmless'; DROP TABLE users;",
-    "hook": [],
+    "hook": [
+      "destructive"
+    ],
     "mcp": {
       "errors": [],
       "risks": [
@@ -172,7 +174,9 @@
     "id": "drop-index",
     "name": "V1__drop-index.sql",
     "sql": "DROP INDEX users_idx;",
-    "hook": [],
+    "hook": [
+      "destructive"
+    ],
     "mcp": {
       "errors": [],
       "risks": [
@@ -186,7 +190,9 @@
     "id": "drop-schema",
     "name": "V1__drop-schema.sql",
     "sql": "DROP SCHEMA old;",
-    "hook": [],
+    "hook": [
+      "destructive"
+    ],
     "mcp": {
       "errors": [],
       "risks": [
@@ -200,7 +206,9 @@
     "id": "drop-database",
     "name": "V1__drop-database.sql",
     "sql": "DROP DATABASE old;",
-    "hook": [],
+    "hook": [
+      "destructive"
+    ],
     "mcp": {
       "errors": [],
       "risks": [

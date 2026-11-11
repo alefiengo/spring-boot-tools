@@ -1,0 +1,46 @@
+{
+  "fixturePurpose": "Synthetic offline parser regression in the claude plugin eval result shape; no model was executed. Document-level fields follow https://code.claude.com/docs/en/plugin-evals#json-result; per-run and case-level field names (promptMarkdown, timeoutSeconds, maxTurns, costUsd, durationSeconds, withOnly) are not fixed by that page and were taken from the Claude Code 2.1.322 evaluator.",
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.322",
+  "partial": false,
+  "costUsd": 0.2,
+  "durationSeconds": 50,
+  "aggregates": {"overallScore": 1, "casesPassed": 1, "casesTotal": 1},
+  "cases": [{
+    "name": "documented",
+    "promptMarkdown": "Explain the requested behavior.",
+    "model": "fixture-generator",
+    "runsPerCase": 1,
+    "timeoutSeconds": 300,
+    "maxTurns": 10,
+    "graders": [
+      {"name": "quality", "type": "llm", "weight": 1},
+      {"name": "skill-fired", "type": "tool_used", "weight": 1}
+    ],
+    "arms": {
+      "with": [{
+        "score": 1, "passed": true, "turns": 3, "costUsd": 0.12, "judgeCostUsd": 0.01,
+        "durationSeconds": 42, "startedAt": "2026-11-10T00:00:00.000Z", "error": null,
+        "tracePath": "trace.jsonl", "skippedPaidGraders": false,
+        "graders": [
+          {"name": "quality", "passed": true, "weight": 1, "explanation": "Present",
+           "withOnly": false, "scored": true, "judgeVotes": [true, true, true],
+           "evidence": "Required behavior is present."},
+          {"name": "skill-fired", "passed": true, "weight": 1, "explanation": "Skill called",
+           "withOnly": true, "scored": false, "evidence": "Skill"}
+        ]
+      }],
+      "without": [{
+        "score": 0, "passed": false, "turns": 2, "costUsd": 0.07, "judgeCostUsd": 0.01,
+        "durationSeconds": 8, "error": null, "tracePath": "trace-without.jsonl",
+        "skippedPaidGraders": false,
+        "graders": [
+          {"name": "quality", "passed": false, "weight": 1, "explanation": "Missing",
+           "withOnly": false, "scored": true, "judgeVotes": [false, false, true],
+           "evidence": "Missing requirement."}
+        ]
+      }]
+    },
+    "aggregates": {"score": 1, "delta": 1}
+  }]
+}

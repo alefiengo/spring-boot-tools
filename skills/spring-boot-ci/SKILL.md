@@ -44,9 +44,9 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "25"
@@ -62,14 +62,18 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0        # gitleaks needs full history
 
       - name: Secrets in history
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} # required for organization repositories
+          GITLEAKS_ENABLE_COMMENTS: "false"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "25"
@@ -92,17 +96,17 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -130,7 +134,7 @@ jobs:
 stages: [test, publish]
 
 default:
-  image: maven:3.9-eclipse-temurin-25
+  image: maven:3.10-eclipse-temurin-25
 
 variables:
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
@@ -148,7 +152,7 @@ verify:
   # Testcontainers needs Docker; use a runner with docker:dind service or
   # a runner with the Docker socket mounted.
   services:
-    - docker:27-dind
+    - docker:29-dind
   variables:
     DOCKER_HOST: tcp://docker:2376
     DOCKER_TLS_CERTDIR: "/certs"
@@ -161,7 +165,7 @@ secrets-history:
     name: ghcr.io/gitleaks/gitleaks:latest
     entrypoint: [""]
   script:
-    - gitleaks detect --source . --report-path gitleaks-report.json --exit-code 1
+    - gitleaks git . --redact --report-path gitleaks-report.json --exit-code 1
 
 dependencies-check:
   stage: test
@@ -173,9 +177,9 @@ image-build:
   needs: [verify, secrets-history]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
-  image: docker:27
+  image: docker:29
   services:
-    - docker:27-dind
+    - docker:29-dind
   variables:
     DOCKER_HOST: tcp://docker:2376
     DOCKER_TLS_CERTDIR: "/certs"
@@ -194,7 +198,7 @@ image-build:
   makes Maven pipelines fast; without redirecting the repo location, the
   default `~/.m2` is not cached.
 - A privileged DinD runner must share `/certs/client` between service and job containers for TLS. Configure this in the runner, not only in the YAML.
-- **DinD (`docker:27-dind`) or socket-mounted runner** is required for
+- **DinD (`docker:29-dind`) or socket-mounted runner** is required for
   Testcontainers. On a socket-mounted runner, drop the DinD service and
   remove `DOCKER_HOST`.
 - `GIT_DEPTH: 0` globally is the simple option; if repos are huge, set it
@@ -211,7 +215,7 @@ image-build:
 - Config files in the repo (`application.yml`) contain structure and safe
   defaults only; anything that varies per deployment is `${ENV_VAR}`.
 
-Pin third-party CI actions/images by reviewed release or digest in the adopted pipeline; the broad tags above are illustrative. Maven version-update reports are informational, not vulnerability scans. Add the organization's dependency vulnerability scanner as a required gate, with its failure policy and maintained vulnerability feed. If GHCR rejects a repository name containing uppercase characters, normalize the image name to lowercase before assigning tags.
+Pin third-party CI actions/images by reviewed release or digest in the adopted pipeline; the broad tags above are illustrative (action majors, `docker:29` and `maven:3.10` verified 2026-11-10; GitHub runners no longer provide Node 20 for actions since 2026-09-23). gitleaks-action needs a `GITLEAKS_LICENSE` secret in organization repositories; alternatively run the pinned `gitleaks` CLI (`gitleaks git . --redact --exit-code 1`). Maven version-update reports are informational, not vulnerability scans. Add the organization's dependency vulnerability scanner as a required gate, with its failure policy and maintained vulnerability feed. If GHCR rejects a repository name containing uppercase characters, normalize the image name to lowercase before assigning tags.
 
 ## Scaling down CI noise
 

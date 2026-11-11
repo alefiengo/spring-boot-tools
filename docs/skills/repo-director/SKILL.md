@@ -111,9 +111,10 @@ Never close unrelated panes or stop a server to refresh the team.
 Collect reports before changing scope. Review the complete diff and run
 appropriate checks from `CONTRIBUTING.md`. One designated runner owns expensive
 shared verification. Run executable regressions for executable changes;
-documentation-only coordination changes need frontmatter/reference validation
-of this skill and diff checks. The plugin's `validate skills` command checks
-the shipped catalog, not this maintenance skill under `docs/skills/`.
+documentation-only coordination changes need
+`claude plugin validate docs/skills --strict` and `git diff --check`.
+`claude plugin validate skills --strict` covers only the shipped catalog, not
+this maintenance skill under `docs/skills/`.
 Quality must not independently approve its own CI/packaging implementation;
 assign that review to another specialist or the director.
 Report skipped or unavailable checks accurately. Behavioral evaluations and

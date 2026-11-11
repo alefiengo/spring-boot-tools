@@ -7,8 +7,8 @@ selection, review quality, or live task success.
 | Capability | Claude Code | Codex local executor | Evidence and limits |
 | --- | --- | --- | --- |
 | Shared skills | Plugin skills | Same `skills/` content via compatibility manifest | Manifests and skill files establish packaging. Model selection and task efficacy are unmeasured by the doctor. |
-| Seven MCP tools | Root `.mcp.json` | Separate `codex/mcp.json` through `codex/run.mjs` and `codex/launch.mjs` | Both use `mcp-server/index.js`. Entrypoint/dependency resolution is weaker evidence than initialize/list-tools or a tool invocation. |
-| Project discovery and builds | MCP and hooks share Python runtime | MCP delegates to the same runtime; verification is explicit | `runtime/project_runtime.py` owns discovery, command construction, locking and reuse. Optional doctor discovery calls only its discover action; it never runs a build. |
+| Seven MCP tools | Root `.mcp.json` | Separate `codex/mcp.json` through `codex/run.mjs` and `codex/launch.mjs` | Both use `mcp-server/index.js` and the dependencies installed at the plugin root. Entrypoint/dependency resolution is weaker evidence than initialize/list-tools or a tool invocation. |
+| Project discovery and builds | MCP and hooks share Python runtime | MCP delegates to the same runtime; verification is explicit | `runtime/project_runtime.py` owns discovery, command construction, locking and reuse. Optional doctor discovery calls only its discover action; it never runs a build, and warns with `discovered_root` when the intended project is part of a larger reactor and with `stale_dependencies` when a leftover `mcp-server/node_modules` shadows the root install. |
 | Specialist agents | `agents/` contains Claude registrations | Claude agents are not registered as Codex agents | Reading specialist guidance is possible but does not establish independent agent execution. |
 | Edit guards and verification hooks | `hooks/hooks.json` registers two pre-edit guards, post-edit migration lint and Stop verification | Explicit empty manifest hooks disable Claude hook discovery | Claude event execution is host-specific. No post-edit marker or build is required; Stop uses current fingerprints. Codex requires explicit verification tools. |
 | Java LSP | Optional `.lsp.json` registration for externally installed `jdtls` | No Java LSP registration supplied | Neither packaging nor doctor checks prove a running language server; the doctor does not launch or require it. |
@@ -30,7 +30,7 @@ are not probed by executing its wrappers.
 
 The existing [Codex adapter evidence](codex.md#validation-evidence) records
 Codex CLI **0.166.0** for its compatibility-manifest/environment behavior and
-optional CLI protocol implementation. That version-specific evidence is not a
+**0.167.0** for the optional CLI protocol check. That version-specific evidence is not a
 promise about later CLI versions, desktop launches, or web-only execution.
 There is no pinned Claude Code version established by the doctor; installed
 host compatibility and event execution need separate host verification.
@@ -44,5 +44,6 @@ host compatibility and event execution need separate host verification.
 | Behavioral evaluations | Model responses and criterion judgments for the evaluated cases when explicitly run | General efficacy outside those cases; no such calls are part of doctor validation |
 
 These commands name separate evidence layers; listing a command does not claim
-it ran for a particular change. The director owns CI and full-suite validation.
+it ran for a particular change. Run the applicable local checks and the full
+suite before claiming them passed.
 Focused doctor checks do not imply those broader checks passed.

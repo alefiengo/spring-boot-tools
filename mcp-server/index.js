@@ -5,7 +5,9 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
@@ -13,17 +15,22 @@ import { parseAllDocuments } from "yaml";
 
 // ── helpers ─────────────────────────────────────────────────────────
 
+const grouped = process.platform !== "win32";
+// Every running child, so a host shutdown signal can terminate their groups.
+const activeChildren = new Set();
+function killTree(child, sig) {
+  try { grouped ? process.kill(-child.pid, sig) : child.kill(sig); } catch { /* already exited */ }
+}
+
 // No shell interpretation. Bound captured output and terminate the whole process
 // group so Maven/Gradle JVMs cannot keep running after cancellation or timeout.
 export function run(command, args = [], { cwd, timeout = 120_000, signal, input, maxOutputBytes = 4 * 1024 * 1024, env = process.env } = {}) {
   return new Promise((resolve) => {
     let stdout = "", stderr = "", reason, spawnError, size = 0, escalation;
-    const grouped = process.platform !== "win32";
     const child = spawn(command, args, { cwd, env, shell: false, detached: grouped, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    if (child.pid) activeChildren.add(child);
     if (input !== undefined) { child.stdin.on("error", () => {}); child.stdin.end(input); }
-    const kill = (sig) => {
-      try { grouped ? process.kill(-child.pid, sig) : child.kill(sig); } catch { /* already exited */ }
-    };
+    const kill = (sig) => killTree(child, sig);
     const stop = (why) => {
       if (reason) return;
       reason = why;
@@ -47,6 +54,7 @@ export function run(command, args = [], { cwd, timeout = 120_000, signal, input,
     const timer = setTimeout(() => stop("Timed out"), timeout);
     child.on("error", (error) => { spawnError = error.message; stderr += error.message; });
     child.on("close", async (code, exitSignal) => {
+      activeChildren.delete(child);
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       await escalation;
@@ -58,26 +66,65 @@ export function run(command, args = [], { cwd, timeout = 120_000, signal, input,
 const textResult = (value, isError = false) => ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], ...(isError ? { isError: true } : {}) });
 const result = (r) => textResult(r, r.exitCode !== 0 || r.ok === false || r.inputsChanged === true);
 const asArray = (value) => value == null ? [] : Array.isArray(value) ? value : [value];
-const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@", parseAttributeValue: false, removeNSPrefix: true });
+// The parser never expands entities: a DOCTYPE outside the prolog (which the
+// parser accepts) cannot inject declared entities, and CDATA such as captured
+// HTML output stays data. Only predefined and character references are decoded.
+// Values remain strings: "1.10", "007" and "1e3" are coordinates, not numbers.
+const predefinedEntities = { lt: "<", gt: ">", amp: "&", quot: "\"", apos: "'" };
+function decodeReferences(value) {
+  if (typeof value !== "string" || !value.includes("&")) return value;
+  return value.replace(/&(?:#x([0-9a-fA-F]{1,6})|#([0-9]{1,7})|(lt|gt|amp|quot|apos));/g, (reference, hex, decimal, name) => {
+    if (name) return predefinedEntities[name];
+    const codePoint = hex ? parseInt(hex, 16) : Number(decimal);
+    // Only XML Char code points; NUL, surrogates and noncharacters stay literal.
+    const valid = codePoint === 0x9 || codePoint === 0xA || codePoint === 0xD || (codePoint >= 0x20 && codePoint <= 0xD7FF)
+      || (codePoint >= 0xE000 && codePoint <= 0xFFFD) || (codePoint >= 0x10000 && codePoint <= 0x10FFFF);
+    return valid ? String.fromCodePoint(codePoint) : reference;
+  });
+}
+// The value processor cannot tell CDATA from text, so CDATA ampersands are escaped
+// first and decoding restores them: CDATA stays literal. A single forward scan
+// keeps this linear even when a comment contains unterminated CDATA openers.
+function protectCdata(text) {
+  let protectedText = "", from = 0;
+  for (;;) {
+    const start = text.indexOf("<![CDATA[", from);
+    const end = start < 0 ? -1 : text.indexOf("]]>", start + 9);
+    if (end < 0) return protectedText + text.slice(from);
+    protectedText += text.slice(from, start + 9) + text.slice(start + 9, end).replaceAll("&", "&amp;") + "]]>";
+    from = end + 3;
+  }
+}
+const xmlParser = new XMLParser({
+  ignoreAttributes: false, attributeNamePrefix: "@", parseAttributeValue: false, parseTagValue: false, removeNSPrefix: true,
+  processEntities: false, tagValueProcessor: (_, value) => decodeReferences(value), attributeValueProcessor: (_, value) => decodeReferences(value),
+});
 function parseXml(text) {
   if (text.length > 8 * 1024 * 1024) throw new Error("XML file exceeds 8 MiB limit.");
-  if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("DTD and entity declarations are not supported.");
+  // Text before the first element is the prolog; a DTD there is reported explicitly.
+  const firstElement = text.search(/<[A-Za-z_:]/);
+  if (/<!DOCTYPE|<!ENTITY/i.test(firstElement < 0 ? text : text.slice(0, firstElement))) throw new Error("DTD and entity declarations are not supported.");
   const valid = XMLValidator.validate(text);
   if (valid !== true) throw new Error(`Invalid XML: ${valid.err.msg}`);
-  return xmlParser.parse(text);
+  return xmlParser.parse(protectCdata(text));
 }
-async function walk(dir, inSource = path.normalize(dir).split(path.sep).includes("src")) {
-  inSource ||= path.basename(dir) === "src";
+// Output and dependency directories are skipped except inside source trees. The
+// source decision is relative to the scanned base, never to ancestors such as ~/src.
+async function walk(dir, base = dir) {
+  const inSource = path.relative(base, dir).split(path.sep).includes("src");
   let entries;
   try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch (e) { if (e.code === "ENOENT") return []; throw e; }
   const files = [];
   for (const entry of entries) {
     const file = path.join(dir, entry.name);
-    if (entry.isDirectory() && (inSource || ![".git", "node_modules", ".gradle", "target", "build"].includes(entry.name))) files.push(...await walk(file, inSource));
+    if (entry.isDirectory() && (inSource || ![".git", "node_modules", ".gradle", "target", "build"].includes(entry.name))) files.push(...await walk(file, base));
     else if (entry.isFile()) files.push(file);
   }
   return files.sort();
 }
+// Horizontal whitespace only: `^\s*` under the m flag spans blank lines and
+// makes a file of many blank lines quadratic, blocking every tool.
+const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\/|^[^\S\n]*\/\/.*$/gm, "");
 const runtimeFile = fileURLToPath(new URL("../runtime/project_runtime.py", import.meta.url));
 async function runtime(payload, ctx, timeout = 120_000) {
   // This plugin-owned setting selects diagnostic HTTP endpoints, not build inputs.
@@ -121,17 +168,17 @@ async function analyzeProject() {
         const pom = parseXml(source).project;
         for (const dep of asArray(pom?.dependencies?.dependency)) dependencies.push({ group: dep.groupId, artifact: dep.artifactId, version: dep.version || null, scope: dep.scope || "compile", provenance });
         if (pom?.artifactId && pom?.version) versions.push({ component: `${pom.groupId || pom.parent?.groupId || ""}:${pom.artifactId}`, version: String(pom.version), provenance });
-      if (pom?.parent) versions.push({ component: `${pom.parent.groupId}:${pom.parent.artifactId}`, version: pom.parent.version, provenance });
+        if (pom?.parent) versions.push({ component: `${pom.parent.groupId}:${pom.parent.artifactId}`, version: pom.parent.version, provenance });
         for (const [name, version] of Object.entries(pom?.properties || {})) if (/version|java|jdk/i.test(name)) versions.push({ component: name, version: String(version), provenance });
       } else {
-        const clean = source.replace(/\/\*[\s\S]*?\*\/|^\s*\/\/.*$/gm, "");
+        const clean = stripComments(source);
         for (const match of clean.matchAll(/\b(implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|annotationProcessor|kapt)\s*(?:\(\s*)?(?:(?:platform|enforcedPlatform)\s*\(\s*)?["']([^"']+:[^"']+)["']/g)) {
           const [group, artifact, version] = match[2].split(":"); dependencies.push({ group, artifact, version: version || null, scope: match[1], provenance });
         }
         for (const match of clean.matchAll(/(?:id\s*\(\s*["']([^"']+)["']\s*\)|id\s+["']([^"']+)["'])\s+version\s+["']([^"']+)["']/g)) versions.push({ component: match[1] || match[2], version: match[3], provenance });
       }
     }
-    for (const language of ["java", "kotlin"]) for (const file of await walk(path.join(moduleRoot, "src/main", language))) {
+    for (const language of ["java", "kotlin"]) for (const file of await walk(path.join(moduleRoot, "src/main", language), moduleRoot)) {
       if (!/\.(?:java|kt)$/.test(file)) continue;
       const source = await fs.readFile(file, "utf-8"), relative = path.relative(root, file);
       layers.push(path.relative(path.join(moduleRoot, "src/main", language), path.dirname(file)));
@@ -139,10 +186,10 @@ async function analyzeProject() {
       const table = source.match(/@Table\s*\(([^)]*)\)/)?.[1]?.match(/\bname\s*=\s*"([^"]+)"/)?.[1];
       persistence.push({ name: source.match(/\bclass\s+(\w+)/)?.[1], file: relative, table: table || null, columns: [...source.matchAll(/@Column\s*\(([^)]*)\)/g)].map(m => ({ name: m[1].match(/\bname\s*=\s*"([^"]+)"/)?.[1] || null, options: m[1] })), relations: [...source.matchAll(/@(OneToOne|OneToMany|ManyToOne|ManyToMany)(?:\s*\(([^)]*)\))?/g)].map(m => ({ type: m[1], options: m[2] || "" })), fields: [...source.matchAll(/private\s+(\S+(?:<[^>]+>)?)\s+(\w+)\s*;/g)].map(m => ({ type: m[1], name: m[2] })), entityGraph: /@EntityGraph\b/.test(source), provenance: { file: relative, resolution: "static-annotations" } });
     }
-    for (const file of await walk(path.join(moduleRoot, "src/main/resources"))) {
+    for (const file of await walk(path.join(moduleRoot, "src/main/resources"), moduleRoot)) {
       if (!/application(?:-[^.]+)?\.(?:ya?ml|properties)$/.test(path.basename(file))) continue;
       const content = await fs.readFile(file, "utf-8"), declaredPorts = [];
-      if (/\.properties$/.test(file)) for (const m of content.matchAll(/^\s*server\.port\s*[=:]\s*(\d+)\s*$/gm)) declaredPorts.push(Number(m[1]));
+      if (/\.properties$/.test(file)) for (const m of content.matchAll(/^[^\S\n]*server\.port[^\S\n]*[=:][^\S\n]*(\d+)[^\S\n]*$/gm)) declaredPorts.push(Number(m[1]));
       else for (const doc of parseAllDocuments(content)) {
         if (doc.errors.length) throw new Error(`Invalid YAML in ${file}: ${doc.errors[0].message}`);
         const config = doc.toJS(), port = config?.server?.port ?? config?.["server.port"];
@@ -227,7 +274,7 @@ async function staticEndpoints() {
   const { root } = await requireProject();
   const endpoints = [], warnings = [];
   for (const file of (await walk(root)).filter(f => /(?:^|[/\\])src[/\\]main[/\\]java[/\\]/.test(f) && f.endsWith(".java"))) {
-    const source = (await fs.readFile(file, "utf-8")).replace(/\/\*[\s\S]*?\*\/|^\s*\/\/.*$/gm, "");
+    const source = stripComments(await fs.readFile(file, "utf-8"));
     if (!/@(?:RestController|Controller)\b/.test(source)) continue;
     const classIndex = source.search(/\bclass\s+\w+/);
     const prefix = source.slice(0, classIndex);
@@ -252,6 +299,8 @@ function appUrl(baseUrl, endpoint) {
   if (!/^\d+$/.test(configuredPort) || Number(configuredPort) < 1 || Number(configuredPort) > 65535) throw new Error("SPRING_BOOT_APP_PORT must be between 1 and 65535.");
   const url = new URL(baseUrl || `http://localhost:${configuredPort}`);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("baseUrl must be HTTP(S), without credentials, query or fragment.");
+  // The configured application is local; never probe other hosts or networks.
+  if (!(url.hostname === "localhost" || url.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(url.hostname))) throw new Error("baseUrl must target the local application: localhost, 127.0.0.0/8 or [::1].");
   url.pathname = url.pathname.replace(/\/$/, "") + endpoint;
   return url;
 }
@@ -273,8 +322,17 @@ async function fetchDocument(url, ctx) {
     }
     text += decoder.decode();
     return { status: response.status, ok: response.ok, text, diagnosis: httpDiagnosis(response.status) };
-  } catch (e) { return { ok: false, error: e.message, diagnosis: "Connection, TLS, cancellation or response limit failure; confirm the application and management port are reachable." }; }
+  } catch (e) {
+    // fetch reports "fetch failed"; the cause distinguishes refusal, redirects and blocked ports.
+    const cause = e.cause?.code || e.cause?.message;
+    const error = cause && cause !== e.message ? `${e.message}: ${cause}` : e.message;
+    const diagnosis = cause === "bad port" ? "The fetch standard blocks this port; HTTP inspection requires the application to listen on another port."
+      : cause === "unexpected redirect" ? "The endpoint redirected and redirects are not followed; use the application's direct local URL as baseUrl."
+      : "Connection, TLS, cancellation or response limit failure; confirm the application and management port are reachable.";
+    return { ok: false, error, diagnosis };
+  }
 }
+const isHealthDocument = (value) => !!value && typeof value === "object" && !Array.isArray(value) && typeof value.status === "string" && !!value.status.trim();
 async function actuatorHealth(args, ctx) {
   const probes = [...new Set(args?.probes || ["health"])], results = [];
   for (const probe of probes) {
@@ -283,12 +341,16 @@ async function actuatorHealth(args, ctx) {
     let health;
     if (response.ok) {
       try { health = JSON.parse(response.text); } catch { response.ok = false; response.error = "Health endpoint did not return valid JSON."; }
-      if (response.ok && (!health || typeof health !== "object" || Array.isArray(health) || typeof health.status !== "string" || !health.status.trim())) {
+      if (response.ok && !isHealthDocument(health)) {
         response.ok = false;
         response.error = "Health endpoint must return an object with a nonempty string status.";
         health = undefined;
       }
-    } else if (response.status >= 500) { try { health = JSON.parse(response.text); } catch { /* no response body disclosure for access errors */ } }
+    } else if (response.status >= 500) {
+      // Only a health document is returned; error pages and traces are never disclosed.
+      try { health = JSON.parse(response.text); } catch { health = undefined; }
+      if (!isHealthDocument(health)) { health = undefined; response.error = "Non-health response body omitted."; }
+    }
     if (["DOWN", "OUT_OF_SERVICE"].includes(health?.status)) { response.ok = false; response.diagnosis = "Health reports an unavailable application or dependency; inspect application logs."; }
     results.push({ probe, endpoint, ...response, text: undefined, ...(health ? { health } : {}) });
   }
@@ -327,11 +389,12 @@ async function openapiEndpoints(args, ctx) {
 // ── server & registration ───────────────────────────────────────────
 
 export function createServer() {
-  const server = new McpServer({ name: "mcp-spring-boot", version: "0.3.0" });
+  const server = new McpServer({ name: "mcp-spring-boot", version: "0.4.0" });
   const register = (name, description, inputSchema, handler) => server.registerTool(name, { description, ...(inputSchema ? { inputSchema } : {}) }, async (...args) => {
     try { return await handler(...args); } catch (e) { return textResult(e.runtimeResponse ?? { error: e.message }, true); }
   });
   const selection = { module: z.string().optional(), profiles: z.array(z.string()).optional() };
+  const localBaseUrl = z.string().optional().describe("Local application URL (localhost, 127.0.0.0/8 or [::1]); defaults to http://localhost:SPRING_BOOT_APP_PORT.");
   register("initialize_project", "Scaffolds a new Spring Boot project ONLY when the user explicitly asks to create/scaffold one. Requires an absent target directory with an existing parent. Refuses existing project/ancestor/module contexts and existing targets. Fetches official start.spring.io metadata and ZIP, validates/stages files, never runs builds.", z.object({
     userRequested: z.literal(true).describe("Set true only for an explicit user request to scaffold a new project; never infer from a missing build."),
     targetDirectory: z.string().min(1).max(4096).describe("Explicit new directory, absolute or relative to PROJECT_ROOT. Parent must exist; no symlinks or traversal."),
@@ -345,9 +408,32 @@ export function createServer() {
   register("run_build", "Runs controlled Maven/Gradle tasks through the shared build coordinator; wrappers, module/profile validation, process locking and bounded output are shared with hooks.", z.object({ task: z.enum(["compile", "test-compile", "package", "verify", "check", "clean", "dependencies"]).default("compile"), force: z.boolean().default(false).describe("Force a fresh verification even when unchanged inputs were already verified."), ...selection }), runBuild);
   register("run_tests", "Runs Maven/Gradle tests with fresh structured XML reports, preserving diagnostics and rejecting stale reports; shared coordinator prevents racing builds.", z.object({ testClass: z.string().optional().describe("Qualified class name, optionally #method; validated by the shared build runtime."), ...selection }), runTests);
   register("check_migrations", "Lints migration names, normalized duplicate versions and risk warnings by module/location. Explicit status mode queries the configured database through Flyway.", z.object({ mode: z.enum(["lint", "status"]).default("lint"), ...selection }), checkMigrations);
-  register("openapi_endpoints", "Inventories static controllers; optionally fetches runtime OpenAPI paths and compares routes. Static approximations and runtime schemas are reported separately.", z.object({ mode: z.enum(["static", "runtime", "compare"]).default("static"), baseUrl: z.string().optional(), documentPath: z.enum(["/v3/api-docs", "/v3/api-docs.yaml"]).default("/v3/api-docs") }), openapiEndpoints);
-  register("actuator_health", "Queries only explicitly selected health/readiness/liveness endpoints; diagnoses HTTP authentication, exposure and connection failures without collecting other Actuator endpoints.", z.object({ baseUrl: z.string().optional(), probes: z.array(z.enum(["health", "readiness", "liveness"])).min(1).max(3).default(["health"]) }), actuatorHealth);
+  register("openapi_endpoints", "Inventories static controllers; optionally fetches the local application's runtime OpenAPI paths and compares routes. Static approximations and runtime schemas are reported separately.", z.object({ mode: z.enum(["static", "runtime", "compare"]).default("static"), baseUrl: localBaseUrl, documentPath: z.enum(["/v3/api-docs", "/v3/api-docs.yaml"]).default("/v3/api-docs") }), openapiEndpoints);
+  register("actuator_health", "Queries only explicitly selected health/readiness/liveness endpoints of the local application; diagnoses HTTP authentication, exposure and connection failures without collecting other Actuator endpoints.", z.object({ baseUrl: localBaseUrl, probes: z.array(z.enum(["health", "readiness", "liveness"])).min(1).max(3).default(["health"]) }), actuatorHealth);
   return server;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) serveStdio(createServer, { onerror: error => console.error(error.message) });
+// Hosts stop stdio servers with a signal (Claude Code sends SIGINT). Terminate the
+// detached build groups first so no build keeps running, or holds the project lock,
+// after the session ends; the runtime's own timeout is not a shutdown mechanism.
+async function shutdown(signal) {
+  const children = [...activeChildren];
+  const closed = Promise.all(children.map(child => new Promise(done => {
+    if (child.exitCode !== null || child.signalCode !== null) done(); else child.once("close", done);
+  })));
+  for (const child of children) killTree(child, "SIGTERM");
+  await Promise.race([closed, new Promise(done => setTimeout(done, 400))]);
+  for (const child of activeChildren) killTree(child, "SIGKILL");
+  process.exit(128 + (os.constants.signals[signal] || 0));
+}
+
+// Compare real paths: Node resolves symlinks in import.meta.url but not in argv[1],
+// so a plugin root reached through a symlink must still start the server.
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+}
+if (invokedDirectly()) {
+  serveStdio(createServer, { onerror: error => console.error(error.message) });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { shutdown(signal); });
+}

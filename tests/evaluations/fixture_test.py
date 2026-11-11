@@ -46,7 +46,7 @@ class SuppliedFixtureTests(unittest.TestCase):
             "message": "You cannot access this order",
             "path": "/orders/101/approve",
         })
-        self.assertEqual(len(list((CASE / "graders").glob("*.md"))), 5)
+        self.assertEqual(len(list((CASE / "graders").glob("*.md"))), 6)
 
 
 if __name__ == "__main__":

@@ -4,11 +4,16 @@
 CLI accepts a JSON object on stdin and returns JSON on stdout. Build subprocesses
 inherit the CLI process group so an MCP cancellation terminates the whole group.
 """
+import ctypes
+import errno
 import fcntl
+import functools
+import grp
 import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import selectors
 import shutil
@@ -19,6 +24,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+import xml.parsers.expat
 
 class BuildCancelled(RuntimeError):
     pass
@@ -27,15 +33,122 @@ class BuildCancelled(RuntimeError):
 BUILD_FILES = ('pom.xml', 'build.gradle.kts', 'build.gradle')
 INVOCATION_ENV = {'CLAUDE_PROJECT_DIR', 'CLAUDE_PLUGIN_ROOT', 'CLAUDE_SESSION_ID', 'CODEX_THREAD_ID', 'MCP_SERVER_NAME', 'PROJECT_ROOT', 'PWD', 'OLDPWD', 'SHLVL', '_'}
 IGNORED = {'.git', '.gradle', 'node_modules', 'target', 'build', 'dist', '__pycache__', '.idea', '.vscode'}
-SOURCE_EXTENSIONS = {'.java', '.kt', '.kts', '.groovy', '.scala', '.sql', '.xml', '.yaml', '.yml', '.properties', '.gradle', '.toml', '.json', '.sh', '.proto', '.graphql', '.gql'}
 MAVEN_TASKS = {'clean', 'compile', 'test-compile', 'test', 'verify', 'package', 'install', 'dependency:tree', 'flyway:info'}
 GRADLE_TASKS = {'clean', 'classes', 'testClasses', 'test', 'check', 'build', 'assemble', 'dependencies'}
 ALIASES = {'maven': {'check': 'verify', 'dependencies': 'dependency:tree', 'migration-status': 'flyway:info'},
-           'gradle': {'compile': 'classes', 'test-compile': 'testClasses', 'verify': 'check', 'package': 'assemble', 'dependencies': 'dependencies'}}
+           'gradle': {'compile': 'classes', 'test-compile': 'testClasses', 'verify': 'check', 'package': 'assemble'}}
+SETTINGS_FILES = ('settings.gradle.kts', 'settings.gradle')
+WRAPPERS = ('mvnw', 'gradlew')
+MAX_REPORT_BYTES = 8 * 1024 * 1024
 
 
 def build_file(folder):
     return next((name for name in BUILD_FILES if (folder / name).is_file()), None)
+
+
+def has_settings(folder):
+    return any((folder / name).is_file() for name in SETTINGS_FILES)
+
+
+@functools.lru_cache(maxsize=None)
+def private_group(gid):
+    """A user-private group (Linux umask 002 convention), never a shared group.
+
+    macOS gives every user the shared primary group staff, so group write is
+    never accepted there. Elsewhere the group must be named after the user and
+    list no other members.
+    """
+    if sys.platform == 'darwin' or gid != os.getgid():
+        return False
+    try:
+        user = pwd.getpwuid(os.getuid()).pw_name
+        group = grp.getgrgid(gid)
+    except KeyError:
+        return False
+    return group.gr_name == user and set(group.gr_mem) <= {user}
+
+
+def untrusted_reason(path):
+    """None when the current user owns the path and no other user can write it."""
+    try:
+        info = os.stat(path)
+    except OSError as error:
+        return f'{path} cannot be inspected ({error.strerror})'
+    if info.st_uid != os.getuid():
+        return f'{path} is owned by uid {info.st_uid}, not the current user'
+    if info.st_mode & 0o002:
+        return f'{path} is writable by all users (mode {stat.S_IMODE(info.st_mode):04o})'
+    if info.st_mode & 0o020 and not private_group(info.st_gid):
+        return f'{path} is writable by a shared group (mode {stat.S_IMODE(info.st_mode):04o})'
+    return None
+
+
+def trusted(path):
+    return untrusted_reason(path) is None
+
+
+def build_inputs(folder):
+    """Files and directories whose content selects or runs build code before any plugin.
+
+    Build/settings files, wrappers, gradle.properties, .mvn/** (extensions.xml,
+    jvm.config, maven.config, wrapper properties/jar) and gradle/wrapper/*.
+    Their directories count too: a writable directory lets another user replace them.
+    """
+    paths = [folder / name for name in (*BUILD_FILES, *SETTINGS_FILES, *WRAPPERS, 'gradle.properties')]
+    for directory, recursive in ((folder / '.mvn', True), (folder / 'gradle', False), (folder / 'gradle/wrapper', False)):
+        if not directory.is_dir() or directory.is_symlink():
+            paths.append(directory)
+            continue
+        entries = [directory, *(directory.rglob('*') if recursive else directory.iterdir())]
+        paths += entries[:500]
+    return [path for path in paths if os.path.lexists(path)]
+
+
+def untrusted_build_dir(folder):
+    """Reason another user could control the build run from folder, or None."""
+    return untrusted_reason(folder) or next(filter(None, map(untrusted_reason, build_inputs(folder))), None)
+
+
+def trusted_build_dir(folder):
+    return untrusted_build_dir(folder) is None
+
+
+def drvfs(path, mounts=None):
+    """True on a WSL Windows drive (drvfs/9p) mounted without Unix metadata."""
+    try:
+        mounts = (Path('/proc/self/mounts').read_text() if mounts is None else mounts).splitlines()
+    except OSError:
+        return False
+    best = None
+    for line in mounts:
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        point = fields[1].replace('\\040', ' ')
+        if (str(path) == point or str(path).startswith(point.rstrip('/') + '/')) and (best is None or len(point) > len(best[0])):
+            best = (point, fields[2], fields[3])
+    # 9p carries drvfs options inside aname, separated by ';'.
+    return bool(best) and (best[1] == 'drvfs' or 'aname=drvfs' in best[2]) and 'metadata' not in re.split('[,;]', best[2])
+
+
+def trust_advice(folder, reason):
+    advice = (f'{reason}. Its build and wrapper are not run. Restrict it (chmod go-w) if you own it, '
+              'or move the project to a directory only you can write.')
+    if drvfs(folder):
+        advice += (' This is a WSL Windows drive mounted without Unix permissions, where every file appears as '
+                   'mode 0777: enable them with the drvfs "metadata" option (/etc/wsl.conf: [automount] '
+                   'options = "metadata,umask=022", then wsl --shutdown) or work under the Linux home directory.')
+    return advice
+
+
+def reject_doctype(raw):
+    """Refuse DTDs in any declared encoding (UTF-16 bypasses a byte-pattern check)."""
+    def refuse(*_):
+        raise ValueError('Unsafe or oversized POM')
+    parser = xml.parsers.expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.Parse(raw, True)
 
 
 def maven_modules(folder):
@@ -44,14 +157,15 @@ def maven_modules(folder):
         if pom.stat().st_size > 8 * 1024 * 1024:
             raise ValueError('Unsafe or oversized POM')
         raw = pom.read_bytes()
-        if len(raw) > 8 * 1024 * 1024 or re.search(br'<!\s*(?:DOCTYPE|ENTITY)', raw, re.I):
+        if len(raw) > 8 * 1024 * 1024:
             raise ValueError('Unsafe or oversized POM')
-        xml = ET.fromstring(raw)
+        reject_doctype(raw)
+        document = ET.fromstring(raw)
         # Membership, not activation: profile modules must share the reactor's
         # lock even when invoked directly. The build still selects active profiles.
-        nodes = xml.findall('./{*}modules/{*}module') + xml.findall('./{*}profiles/{*}profile/{*}modules/{*}module')
+        nodes = document.findall('./{*}modules/{*}module') + document.findall('./{*}profiles/{*}profile/{*}modules/{*}module')
         return list(dict.fromkeys(node.text.strip() for node in nodes if node.text and node.text.strip()))
-    except ET.ParseError:
+    except (ET.ParseError, xml.parsers.expat.ExpatError):
         return []  # discovery works on incomplete edits; the build reports syntax failures
 
 
@@ -72,7 +186,7 @@ def module_entries(root, tool):
                     entries.append({'path': child.relative_to(root).as_posix(), 'root': str(child), 'buildFile': filename, 'buildTool': 'maven' if filename == 'pom.xml' else 'gradle'})
                     queue.append(child)
     else:
-        settings = next((root / name for name in ('settings.gradle.kts', 'settings.gradle') if (root / name).is_file()), None)
+        settings = next((root / name for name in SETTINGS_FILES if (root / name).is_file()), None)
         if settings:
             text = settings.read_text()
             # Static includes only; dynamic settings are reported as such by discovery.
@@ -94,22 +208,43 @@ def module_entries(root, tool):
 def discover(location):
     location = Path(location).resolve()
     folder = location if location.is_dir() else location.parent
-    found = next((p for p in (folder, *folder.parents) if build_file(p) or any((p / name).is_file() for name in ('settings.gradle.kts', 'settings.gradle'))), None)
+    found = next((p for p in (folder, *folder.parents) if build_file(p) or has_settings(p)), None)
     if not found:
         raise ValueError(f'No Maven or Gradle project found from {location}')
+    # The requested directory is the caller's choice (see SECURITY.md trust
+    # boundaries). Ancestors are not: their build and wrapper would execute.
+    reason = untrusted_build_dir(found) if found != folder else None
+    if reason:
+        raise ValueError(f'Refusing untrusted ancestor build directory {found}: ' + trust_advice(found, reason))
     filename = build_file(found)
     tool = 'maven' if filename == 'pom.xml' else 'gradle'
     root = found
+    # An ancestor becomes the root only through verifiable reactor membership
+    # in a directory that another user cannot control. Its wrapper would run.
+    # A refused enclosing build is reported, never skipped silently.
+    warnings = []
     if tool == 'maven':
         for candidate in found.parents:
             if (candidate / 'pom.xml').is_file() and any(Path(m['root']) == root for m in module_entries(candidate, 'maven')):
+                reason = untrusted_build_dir(candidate)
+                if reason:
+                    warnings.append(f'Ignored enclosing Maven reactor {candidate}; using {root} alone: ' + trust_advice(candidate, reason))
+                    break
                 root = candidate
-    else:
-        root = next((p for p in (found, *found.parents) if any((p / s).is_file() for s in ('settings.gradle.kts', 'settings.gradle'))), found)
+    elif not has_settings(found):
+        own_wrapper = filename is not None and (found / 'gradlew').is_file()
+        candidate = next((p for p in found.parents if has_settings(p)), None)
+        if candidate is not None and (not own_wrapper or any(Path(m['root']) == found for m in module_entries(candidate, 'gradle'))):
+            reason = untrusted_build_dir(candidate)
+            if reason:
+                warnings.append(f'Ignored enclosing Gradle settings {candidate}; using {found} alone: ' + trust_advice(candidate, reason))
+            else:
+                root = candidate
     filename = build_file(root)
     wrapper = root / ('mvnw' if tool == 'maven' else 'gradlew')
     return {'root': str(root), 'buildTool': tool, 'buildFile': filename, 'wrapper': str(wrapper) if wrapper.is_file() else None,
-            'modules': module_entries(root, tool), 'discoveryScope': 'declared Maven modules or static Gradle includes; dynamic Gradle settings require build inspection'}
+            'modules': module_entries(root, tool), 'discoveryScope': 'declared Maven modules or static Gradle includes; dynamic Gradle settings require build inspection',
+            **({'discoveryWarnings': warnings} if warnings else {})}
 
 
 def build_plan(request):
@@ -170,7 +305,7 @@ def ignored_directory(path, root):
     if 'src' in relative.parts or path.name not in IGNORED:
         return False
     if path.name in ('target', 'build', 'dist'):
-        if build_file(path) or any((path / settings).is_file() for settings in ('settings.gradle', 'settings.gradle.kts')):
+        if build_file(path) or has_settings(path):
             return False  # a module can legitimately be named build or target
         # Output names outside a module root may be real input directories.
         return path.parent == root or bool(build_file(path.parent)) or any(Path(module['root']) == path.parent for module in module_entries(root, 'gradle'))
@@ -229,17 +364,45 @@ def fingerprint(root):
     return digest.hexdigest()
 
 
-def state_dir(root):
-    key = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()
-    folder = Path(tempfile.gettempdir()) / f'sb-tools-build-{os.getuid()}-{key}'
+def private_dir(folder):
     try:
         folder.mkdir(mode=0o700)
     except FileExistsError:
         pass
     info = folder.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise ValueError('Unsafe shared build state directory')
+        raise ValueError(f'Unsafe shared build state directory: {folder}')
     return folder
+
+
+def state_base():
+    """Per-user state root, independent of TMPDIR/HOME/XDG variables.
+
+    Hooks, MCP and Codex may inherit different environments; every process of
+    one user must agree on the lock. /tmp names could be pre-created by others.
+    A uid without a user database entry (docker -u, OpenShift) or a missing or
+    read-only home falls back to a private per-uid directory in the temporary
+    directory, still created 0700 and owner-checked: another user can deny it,
+    not take it over. An unsafe existing cache is an error, never a fallback.
+    """
+    try:
+        cache = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.cache'
+        try:
+            cache.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        if cache.is_dir():
+            if not trusted(cache):
+                raise ValueError(f'Unsafe build state cache directory: {cache}')
+            return private_dir(cache / 'spring-boot-tools')
+    except (KeyError, OSError):
+        pass
+    return private_dir(Path(tempfile.gettempdir()) / f'spring-boot-tools-{os.getuid()}')
+
+
+def state_dir(root):
+    key = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()
+    return private_dir(state_base() / f'build-{key}')
 
 
 def state_read(folder):
@@ -313,6 +476,43 @@ def terminate(process, own_group):
     process.wait()
 
 
+def read_regular(path, limit):
+    """Read a regular file without following links or blocking on special files."""
+    try:
+        handle = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENXIO, errno.ENOENT):
+            return None
+        raise
+    with os.fdopen(handle, 'rb') as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        if metadata.st_size > limit:
+            raise ValueError(f'Test report exceeds 8 MiB limit: {path}')
+        content = source.read(limit + 1)
+    if len(content) > limit:
+        raise ValueError(f'Test report exceeds 8 MiB limit: {path}')
+    return metadata, content
+
+
+def parent_death_signal():
+    """Linux: the build leader receives SIGTERM if the process that started it dies.
+
+    The hook build runs in its own session, outside any group kill aimed at the
+    hook. SIGKILL cannot be handled; this keeps the build from outliving it.
+    """
+    if not sys.platform.startswith('linux'):
+        return None
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    parent = os.getpid()
+    def apply():
+        prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+        if os.getppid() != parent:
+            os.kill(os.getpid(), signal.SIGTERM)
+    return apply
+
+
 def test_report_snapshot(root, module_roots=None):
     """Read report contents while the caller owns the project build lock."""
     reports = {}
@@ -332,7 +532,7 @@ def test_report_snapshot(root, module_roots=None):
             if name not in directories:
                 continue
             output = Path(folder) / name
-            if output.resolve() in module_roots or build_file(output) or any((output / s).is_file() for s in ('settings.gradle', 'settings.gradle.kts')):
+            if output.resolve() in module_roots or build_file(output) or has_settings(output):
                 continue  # a real module named build/target is not an output tree
             directories.remove(name)
             for report_dir in (('surefire-reports', 'failsafe-reports') if name == 'target' else ('test-results',)):
@@ -344,14 +544,12 @@ def test_report_snapshot(root, module_roots=None):
                                          and not (Path(report_folder) / child).is_symlink())
                     for filename in sorted(files):
                         file = Path(report_folder) / filename
-                        if file.suffix != '.xml' or file.is_symlink():
+                        if file.suffix != '.xml':
                             continue
-                        metadata = file.stat()
-                        if metadata.st_size > 8 * 1024 * 1024:
-                            raise ValueError(f'Test report exceeds 8 MiB limit: {file}')
-                        content = file.read_bytes()
-                        if len(content) > 8 * 1024 * 1024:
-                            raise ValueError(f'Test report exceeds 8 MiB limit: {file}')
+                        report = read_regular(file, MAX_REPORT_BYTES)
+                        if report is None:
+                            continue  # symlinks, FIFOs and devices are not reports and may block
+                        metadata, content = report
                         total += len(content)
                         if total > 8 * 1024 * 1024 or len(reports) >= 1024:
                             raise ValueError('Test report aggregate exceeds 8 MiB or 1024 files; narrow test/module scope')
@@ -396,20 +594,23 @@ def run_build(request, own_process_group=False):
         state.pop('verifiedScopes', None)
         state.pop('verifiedFingerprint', None)
         state_write(folder, state)
-        process = subprocess.Popen(plan['command'], cwd=plan['root'], stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=own_process_group)
-        selector = selectors.DefaultSelector()
         outputs = {'stdout': bytearray(), 'stderr': bytearray()}
-        for name in outputs:
-            selector.register(getattr(process, name), selectors.EVENT_READ, name)
         timed_out, too_large, used = False, False, 0
-        previous_handlers = {}
-        if own_process_group:
-            def interrupted(signum, frame):
-                raise BuildCancelled(f'Build cancelled by signal {signum}')
-            for signum in (signal.SIGTERM, signal.SIGINT):
-                previous_handlers[signum] = signal.signal(signum, interrupted)
+        previous_handlers, process, selector = {}, None, None
         try:
+            if own_process_group:
+                # Installed before the child exists: an earlier signal cannot orphan it.
+                # SIGHUP covers a closed terminal; the build is outside the caller's session.
+                def interrupted(signum, frame):
+                    raise BuildCancelled(f'Build cancelled by signal {signum}')
+                for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                    previous_handlers[signum] = signal.signal(signum, interrupted)
+            process = subprocess.Popen(plan['command'], cwd=plan['root'], stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=own_process_group,
+                                       preexec_fn=parent_death_signal() if own_process_group else None)
+            selector = selectors.DefaultSelector()
+            for name in outputs:
+                selector.register(getattr(process, name), selectors.EVENT_READ, name)
             while selector.get_map():
                 if time.monotonic() >= deadline:
                     timed_out = True
@@ -453,12 +654,14 @@ def run_build(request, own_process_group=False):
             return dict(plan, **report_result, ok=ok, exitCode=process.returncode, **{name: bytes(value).decode('utf-8', 'replace') for name, value in outputs.items()},
                         reused=False, durationMs=round((time.monotonic() - start) * 1000), fingerprint=before, inputsChanged=before is not None and after is not None and before != after, cacheable=before is not None and after is not None, cacheDiagnostic=cache_diagnostic, timedOut=timed_out, outputLimitExceeded=too_large)
         finally:
-            selector.close()
-            for name in outputs:
-                getattr(process, name).close()
             try:
-                if own_process_group or process.poll() is None:
-                    terminate(process, own_process_group)
+                if selector is not None:
+                    selector.close()
+                if process is not None:
+                    for name in outputs:
+                        getattr(process, name).close()
+                    if own_process_group or process.poll() is None:
+                        terminate(process, own_process_group)
             finally:
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
@@ -505,7 +708,7 @@ def main():
                       'outputOmitted': True}
             encoded = json.dumps(result)
         print(encoded)
-    except (OSError, ValueError, TypeError, TimeoutError, BuildCancelled) as error:
+    except (OSError, ValueError, TypeError, KeyError, TimeoutError, BuildCancelled) as error:
         print(json.dumps({'ok': False, 'error': str(error), 'exitCode': 1}))
         sys.exit(1)
 

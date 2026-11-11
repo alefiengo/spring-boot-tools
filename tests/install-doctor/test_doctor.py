@@ -32,7 +32,7 @@ class DoctorTests(unittest.TestCase):
         for name in ('.claude-plugin/plugin.json', '.claude-plugin/marketplace.json',
                      '.codex-plugin/plugin.json', '.mcp.json', 'codex/mcp.json',
                      'codex/run.mjs', 'codex/launch.mjs', 'mcp-server/index.js',
-                     'mcp-server/package.json', 'mcp-server/package-lock.json',
+                     'package.json', 'package-lock.json',
                      'runtime/project_runtime.py', 'runtime/sql_lint.py',
                      'runtime/project_initializer.py', 'scripts/install-doctor.py'):
             target = self.bundle / name
@@ -41,9 +41,9 @@ class DoctorTests(unittest.TestCase):
         (self.bundle / 'skills').mkdir()
         # Resolution fixtures deliberately throw if imported. A doctor must only
         # resolve entrypoints and must never start this mock dependency's code.
-        package = json.loads((self.bundle / 'mcp-server/package.json').read_text())
+        package = json.loads((self.bundle / 'package.json').read_text())
         for name in package['dependencies']:
-            dep = self.bundle / 'mcp-server/node_modules' / name
+            dep = self.bundle / 'node_modules' / name
             dep.mkdir(parents=True)
             for target in ('index.cjs', 'index.mjs', 'stdio.mjs'):
                 (dep / target).write_text('throw new Error("must not import dependencies");')
@@ -90,6 +90,26 @@ class DoctorTests(unittest.TestCase):
         result = self.run_doctor('--project', str(self.app))
         self.assertEqual(result['project_discovery']['discovery']['root'], str(self.app))
         self.assertEqual(result['dependencies']['status'], 'ok')
+        self.assertNotIn('discovered_root', result)
+
+    def test_dependencies_resolve_from_plugin_root_only(self):
+        self.needs_node()
+        self.assertFalse((self.bundle / 'mcp-server/node_modules').exists())
+        self.assertEqual(self.run_doctor()['dependencies']['status'], 'ok')
+        shutil.copytree(self.bundle / 'node_modules', self.bundle / 'mcp-server/node_modules')
+        self.assertEqual(self.run_doctor()['stale_dependencies']['status'], 'warning')
+        shutil.rmtree(self.bundle / 'node_modules')
+        self.assertIn('Missing MCP dependencies', self.run_doctor(expected=1)['dependencies']['message'])
+
+    def test_warns_when_project_is_discovered_inside_another_root(self):
+        self.needs_node()
+        module = self.app / 'module'
+        module.mkdir()
+        (module / 'pom.xml').write_text('<project/>')
+        (self.app / 'pom.xml').write_text('<project><modules><module>module</module></modules></project>')
+        result = self.run_doctor('--workspace', str(module), '--project', str(module))
+        self.assertEqual(result['discovered_root']['status'], 'warning')
+        self.assertIn(str(self.app), result['discovered_root']['message'])
 
     def test_missing_node_and_python(self):
         result = self.run_doctor('--node', '/missing/node', '--python', '/missing/python', expected=1)
@@ -108,13 +128,13 @@ class DoctorTests(unittest.TestCase):
 
     def test_missing_dependency(self):
         self.needs_node()
-        shutil.rmtree(self.bundle / 'mcp-server/node_modules/yaml')
+        shutil.rmtree(self.bundle / 'node_modules/yaml')
         result = self.run_doctor(expected=1)
         self.assertIn('yaml', result['dependencies']['message'])
 
     def test_missing_esm_target_despite_valid_cjs_entrypoint(self):
         self.needs_node()
-        dependency = self.bundle / 'mcp-server/node_modules/@modelcontextprotocol/server'
+        dependency = self.bundle / 'node_modules/@modelcontextprotocol/server'
         for target, specifier in (('index.mjs', '@modelcontextprotocol/server'),
                                   ('stdio.mjs', '@modelcontextprotocol/server/stdio')):
             with self.subTest(target=target):
@@ -130,7 +150,7 @@ class DoctorTests(unittest.TestCase):
 
     def test_missing_esm_subpath_export(self):
         self.needs_node()
-        self.mutate_json('mcp-server/node_modules/@modelcontextprotocol/server/package.json',
+        self.mutate_json('node_modules/@modelcontextprotocol/server/package.json',
                          lambda data: data['exports'].pop('./stdio'))
         result = self.run_doctor(expected=1)
         self.assertIn('@modelcontextprotocol/server/stdio', result['dependencies']['message'])

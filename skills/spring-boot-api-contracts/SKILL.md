@@ -55,7 +55,7 @@ Spring Framework 7 + Boot 4.1 has built-in support for `ProblemDetail`. Enable i
 spring.mvc.problemdetails.enabled: true
 ```
 
-Response:
+Response (the `traceId` extension is added by the application, e.g. via `setProperty` in an advice; the property does not produce it):
 ```json
 {
   "type": "about:blank",
@@ -101,13 +101,15 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class ApiVersionConfig implements WebMvcConfigurer {
     @Override
     public void configureApiVersioning(ApiVersionConfigurer config) {
-        config.usePathSegment(1); // /api/v1/users — version taken from the path segment
-        config.setDefaultVersion("1");
+        // /api/v1/users: version from segment 1, only for /api paths (Framework 7.0.6+).
+        // Without the predicate, every other handler-mapped path fails version resolution (400).
+        config.usePathSegment(1, path -> path.pathWithinApplication().value().startsWith("/api/"));
+        config.setDefaultVersion("1"); // unversioned paths resolve to null; a default keeps them valid
     }
 }
 ```
 
-For path-based versioning, map a variable version segment (for example `@GetMapping(path = "/api/{version}/users", version = "1")`) so the resolver sees that segment. Define supported versions and test missing/unsupported versions. Choose retirement timing from the consumer support policy; keep old contracts until the agreed sunset date.
+For path-based versioning, map a variable version segment (for example `@GetMapping(path = "/api/{version}/users", version = "1")`) so the resolver sees that segment. Define supported versions and test missing/unsupported versions plus an unversioned endpoint outside `/api`. Choose retirement timing from the consumer support policy; keep old contracts until the agreed sunset date.
 
 ### Calling other services: HTTP interface clients
 
@@ -145,7 +147,7 @@ Use `RestClient` (synchronous) or `WebClient` (reactive) as the underlying trans
 <dependency>
     <groupId>org.springdoc</groupId>
     <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
-    <version>3.1.1</version>
+    <version>3.2.0</version> <!-- verified 2026-11-10 for Boot 4.1.x; Boot 4.0.x uses springdoc 3.0.x -->
 </dependency>
 ```
 

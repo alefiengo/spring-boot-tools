@@ -7,15 +7,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+const { removeBuildState } = createRequire(import.meta.url)('../mcp/build-state.cjs');
 const json = async file => JSON.parse(await readFile(path.join(root, file), 'utf8'));
 const tools = ['actuator_health', 'analyze_project', 'check_migrations', 'initialize_project', 'openapi_endpoints', 'run_build', 'run_tests'];
 const pom = '<project><modelVersion>4.0.0</modelVersion><groupId>app</groupId><artifactId>demo</artifactId><version>1</version></project>';
 
 async function temporary(t) {
   const base = await realpath(await mkdtemp(path.join(tmpdir(), 'sbt-codex-')));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  t.after(() => { removeBuildState(base); return rm(base, { recursive: true, force: true }); });
   return base;
 }
 
@@ -37,7 +39,9 @@ async function client(t, { relocated = false, nested = false, project = true } =
     for (const directory of ['codex', 'runtime']) await cp(path.join(root, directory), path.join(plugin, directory), { recursive: true });
     await mkdir(path.join(plugin, 'mcp-server'));
     for (const file of ['index.js', 'package.json']) await cp(path.join(root, 'mcp-server', file), path.join(plugin, 'mcp-server', file));
-    await symlink(path.join(root, 'mcp-server/node_modules'), path.join(plugin, 'mcp-server/node_modules'), 'dir');
+    // Dependencies live at the plugin root, where Claude Code installs them.
+    for (const file of ['package.json', 'package-lock.json']) await cp(path.join(root, file), path.join(plugin, file));
+    await symlink(path.join(root, 'node_modules'), path.join(plugin, 'node_modules'), 'dir');
   }
   const config = await json('codex/mcp.json');
   const server = config.mcpServers['spring-boot'];
@@ -98,7 +102,15 @@ test('Codex packages skills and its own MCP config, explicitly suppressing defau
   const config = await json('codex/mcp.json');
   assert.doesNotMatch(JSON.stringify(config), /CLAUDE_|\$\{|user_config/);
   assert.equal(config.mcpServers['spring-boot'].cwd, undefined);
-  assert.deepEqual(config.mcpServers['spring-boot'].env_vars, ['SBT_PLUGIN_ROOT', 'SPRING_BOOT_APP_PORT']);
+  const forwarded = config.mcpServers['spring-boot'].env_vars;
+  assert.deepEqual(forwarded.slice(0, 2), ['SBT_PLUGIN_ROOT', 'SPRING_BOOT_APP_PORT']);
+  // Codex passes only a fixed allowlist (HOME, PATH, TMPDIR, ...) plus env_vars; builds
+  // need the user's JDK, build-tool options and proxies. Unset names are omitted.
+  for (const name of ['JAVA_HOME', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', 'MAVEN_OPTS', 'MAVEN_ARGS', 'GRADLE_OPTS', 'GRADLE_USER_HOME',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy']) assert.ok(forwarded.includes(name), name);
+  assert.equal(new Set(forwarded).size, forwarded.length);
+  // Codex 0.167.0 already passes these on Unix (DEFAULT_ENV_VARS in rmcp-client).
+  for (const name of ['HOME', 'LOGNAME', 'PATH', 'SHELL', 'USER', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TZ']) assert.ok(!forwarded.includes(name), name);
 });
 
 test('the actual config and launcher complete MCP initialize/list-tools after relocation', async t => {
@@ -170,4 +182,58 @@ test('the Codex wrapper resolves its own root, keeps cwd/arguments and propagate
   assert.equal(record.cwd, base);
   assert.deepEqual(record.args, args);
   assert.equal(path.resolve(record.root), path.resolve(root));
+});
+
+test('the launcher starts through a symlinked plugin root', async t => {
+  const base = await temporary(t);
+  const linked = path.join(base, 'linked-plugin');
+  await symlink(root, linked, 'dir');
+  await mkdir(path.join(base, 'app'));
+  await writeFile(path.join(base, 'app/pom.xml'), pom);
+  const server = (await json('codex/mcp.json')).mcpServers['spring-boot'];
+  const child = spawn(server.command, server.args, { cwd: path.join(base, 'app'), env: { ...process.env, SBT_PLUGIN_ROOT: linked }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill('SIGKILL'));
+  const lines = createInterface({ input: child.stdout });
+  t.after(() => lines.close());
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'symlink', version: '1' } } }) + '\n');
+  const [line] = await once(lines, 'line');
+  assert.equal(JSON.parse(line).result.serverInfo.name, 'mcp-spring-boot');
+});
+
+test('the wrapper does not duplicate terminal SIGINT and forwards termination', async t => {
+  const base = await temporary(t);
+  const bin = path.join(base, 'bin');
+  const log = path.join(base, 'signals.log');
+  await mkdir(bin);
+  // A stand-in Codex that records each signal it receives.
+  await writeFile(path.join(bin, 'codex'), `#!${process.execPath}
+const fs = require('node:fs');
+for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(s, () => { fs.appendFileSync(process.env.SIGNAL_LOG, s + '\\n'); if (s !== 'SIGINT') process.exit(0); });
+fs.appendFileSync(process.env.SIGNAL_LOG, 'ready\\n');
+setTimeout(() => process.exit(0), 3000);
+`, { mode: 0o755 });
+  const start = () => {
+    const wrapper = spawn(process.execPath, [path.join(root, 'codex/run.mjs')], {
+      detached: true, stdio: 'ignore', env: { ...process.env, SIGNAL_LOG: log, PATH: bin + path.delimiter + process.env.PATH },
+    });
+    t.after(() => { try { process.kill(-wrapper.pid, 'SIGKILL'); } catch { /* exited */ } });
+    return wrapper;
+  };
+  const records = async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+  const ready = async () => { for (let i = 0; i < 100 && !(await records()).includes('ready'); i++) await new Promise(r => setTimeout(r, 30)); };
+  // A terminal delivers Ctrl-C to the whole foreground process group.
+  let wrapper = start();
+  await ready();
+  process.kill(-wrapper.pid, 'SIGINT');
+  await new Promise(r => setTimeout(r, 300));
+  assert.deepEqual(await records(), ['ready', 'SIGINT']);
+  process.kill(-wrapper.pid, 'SIGKILL');
+  await rm(log, { force: true });
+  // A supervisor terminating only the wrapper must still stop Codex.
+  wrapper = start();
+  await ready();
+  const exited = once(wrapper, 'exit');
+  process.kill(wrapper.pid, 'SIGTERM');
+  await exited;
+  assert.deepEqual(await records(), ['ready', 'SIGTERM']);
 });

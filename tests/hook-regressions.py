@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Run real hooks with JSON and isolated projects; builds use mock wrappers only."""
+import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +21,17 @@ SQL_MESSAGES = {
     'destructive': 'Destructive SQL: IF EXISTS does not protect data. Review backups, dependencies and rollback before applying. Never edit an already applied migration; add a new migration.',
 }
 
+def state_path(root):
+    key = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / '.cache/spring-boot-tools' / f'build-{key}'
+
+
 class HookTests(unittest.TestCase):
     def setUp(self):
         self.fixture = tempfile.TemporaryDirectory()
         self.addCleanup(self.fixture.cleanup)
         self.root = Path(self.fixture.name)
+        self.addCleanup(shutil.rmtree, state_path(self.root), ignore_errors=True)
 
     def invoke(self, file=None, content=None, **extra):
         action = extra.pop('action', ACTION)
@@ -37,9 +48,10 @@ class HookTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout) if result.stdout else None
 
-    def deny(self, output):
+    def deny(self, output, decision='deny'):
+        self.assertIsNotNone(output)
         self.assertEqual(output['hookSpecificOutput']['hookEventName'], 'PreToolUse')
-        self.assertEqual(output['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(output['hookSpecificOutput']['permissionDecision'], decision)
 
     def context(self, output):
         self.assertEqual(output['hookSpecificOutput']['hookEventName'], 'PostToolUse')
@@ -83,11 +95,56 @@ class HookTests(unittest.TestCase):
             self.assertIsNone(self.invoke(path, text))
         path.write_text('name: "app"\npassword: ${DB_PASSWORD}\n')
         self.deny(self.invoke(path, tool_input={'old_string':'${DB_PASSWORD}', 'new_string':'hunter2'}))
-        path.write_text('password: safe\napi_key: ${API_KEY}')
-        self.deny(self.invoke(path, tool_input={'old_string':'${API_KEY}', 'new_string':'dummy'}))
         self.deny(self.invoke(self.root/'.env.production', 'DB_PASSWORD=hunter2\nOTHER=${ENV}'))
         self.deny(self.invoke(self.root/'.env', 'PASSWORD=dummy,real-secret'))
         self.assertIsNone(self.invoke(self.root/'Service.java', 'password: hunter2'))
+
+    def test_secret_only_flags_introduced_literals(self):
+        if ACTION != 'guard-secrets': self.skipTest('other hook')
+        path = self.root / 'application.properties'
+        path.write_text('server.port=8080\nspring.datasource.password=legacy-literal\n')
+        self.assertIsNone(self.invoke(path, tool_input={'old_string':'8080', 'new_string':'8081'}))
+        self.assertIsNone(self.invoke(path, path.read_text().replace('8080', '8081')))
+        self.deny(self.invoke(path, tool_input={'old_string':'server.port=8080', 'new_string':'server.port=8080\nspring.mail.password=new-literal'}))
+        self.deny(self.invoke(path, tool_input={'old_string':'legacy-literal', 'new_string':'other-literal'}))
+        # A second copy of an existing literal is still new.
+        self.deny(self.invoke(path, path.read_text() + 'spring.datasource.password=legacy-literal\n'))
+        path = self.root / 'application.yml'
+        path.write_text('password: safe\napi_key: ${API_KEY}')
+        self.assertIsNone(self.invoke(path, tool_input={'old_string':'${API_KEY}', 'new_string':'dummy'}))
+
+    def test_secret_test_configuration_asks(self):
+        if ACTION != 'guard-secrets': self.skipTest('other hook')
+        for name in ('src/test/resources/application.yml', 'application-test.yml', 'config/application-it-test.properties'):
+            with self.subTest(name=name):
+                self.deny(self.invoke(self.root / name, 'spring:\n  datasource:\n    password: test'), decision='ask')
+        self.assertIsNone(self.invoke(self.root / 'src/test/resources/application.yml', 'password: ${DB_PASSWORD}'))
+        self.deny(self.invoke(self.root / 'src/main/resources/application.yml', 'password: test'))
+
+    def test_secret_names_files_and_separators(self):
+        if ACTION != 'guard-secrets': self.skipTest('other hook')
+        cases = (('application.yml', 'spring:\n  cloud:\n    aws:\n      credentials:\n        secret-key: wJalrXUtnFEMI/K7MDENG'),
+                 ('application.yml', 'jwt.signing-key: c2VjcmV0LXNpZ25pbmc'),
+                 ('application.properties', 'spring.datasource.password hunter2'),
+                 ('application.properties', '  app.api-key\tliteral-key'),
+                 ('bootstrap.yml', 'spring.cloud.config.password: hunter2'),
+                 ('application.yml', 'password: ' + '${A:' * 2000 + 'hunter2' + '}' * 2000))
+        for name, text in cases:
+            with self.subTest(text=text[:40]):
+                self.deny(self.invoke(self.root / name, text))
+        for name, text in (('application.properties', 'spring.datasource.url jdbc:h2:mem:test'),
+                           ('application.properties', 'app.note rotate the password monthly'),
+                           ('application.yml', 'jwt.signing-key: classpath:jwt.key'),
+                           ('application.yml', 'password: ${A:${B:${C}}}')):
+            with self.subTest(text=text):
+                self.assertIsNone(self.invoke(self.root / name, text))
+
+    def test_guard_input_cost_is_linear(self):
+        if ACTION not in ('guard-secrets', 'guard-ddl'): self.skipTest('other hook')
+        for text in ('\n' * 200000 + 'x', ' ' + 'password' * 20000, 'password: x ' * 20000, 'ddl-auto: none ' * 20000):
+            start = time.monotonic()
+            self.invoke(self.root / 'application.yml', text)
+            self.assertLess(time.monotonic() - start, 5, text[:20])
 
     def test_ddl(self):
         if ACTION != 'guard-ddl': self.skipTest('other hook')
@@ -106,6 +163,60 @@ class HookTests(unittest.TestCase):
             self.deny(self.invoke(path, text))
         path.write_text('ddl-auto: none')
         self.deny(self.invoke(path, tool_input={'old_string':'none', 'new_string':'update'}))
+
+    def test_ddl_documents_keys_and_values(self):
+        if ACTION != 'guard-ddl': self.skipTest('other hook')
+        yaml, properties = self.root / 'application.yml', self.root / 'application.properties'
+        for path, text in (
+                (yaml, 'spring.config.activate.on-profile: dev\n--- # prod\nspring.jpa.hibernate.ddl-auto: update'),
+                (yaml, 'spring:\n  config:\n    activate:\n      on-profile: dev\n--- # prod\nspring:\n  jpa:\n    hibernate:\n      ddl-auto: create'),
+                (yaml, 'spring.config.activate.on-profile: dev\n...\nddl-auto: update'),
+                (yaml, 'spring.config.activate.on-profile: dev\n  ---\nddl-auto: update'),
+                (yaml, 'spring:\n  jpa:\n    properties:\n      hibernate:\n        hbm2ddl:\n          auto: create'),
+                (properties, 'spring.jpa.properties.hibernate.hbm2ddl.auto=create-drop'),
+                (properties, 'spring.jpa.properties.jakarta.persistence.schema-generation.database.action=drop-and-create'),
+                (properties, 'spring.jpa.hibernate.ddl-auto=drop'),
+                (properties, 'spring.jpa.hibernate.ddl-auto=create-only'),
+                (properties, 'spring.jpa.hibernate.ddl-auto=truncate'),
+                (properties, 'spring.jpa.hibernate.ddlAuto=update'),
+                (properties, 'spring.jpa.hibernate.ddl-auto create'),
+                (properties, 'spring.config.activate.on-profile=dev\n---\nspring.jpa.hibernate.ddl-auto=update')):
+            with self.subTest(text=text):
+                self.deny(self.invoke(path, text))
+        for path, text in ((yaml, 'spring.config.activate.on-profile: dev\n# ---\nddl-auto: update'),
+                           (properties, 'spring.config.activate.on-profile=dev\nspring.jpa.hibernate.ddl-auto=create-drop\n#---\nspring.jpa.hibernate.ddl-auto=validate'),
+                           (properties, 'spring.jpa.properties.jakarta.persistence.schema-generation.database.action=none')):
+            with self.subTest(text=text):
+                self.assertIsNone(self.invoke(path, text))
+
+    def test_test_paths_are_relative_to_the_project(self):
+        if ACTION not in ('guard-ddl', 'guard-secrets'): self.skipTest('other hook')
+        project = self.root / 'src/test/shop'  # checkout under a directory named src/test
+        (project / 'src/main/resources').mkdir(parents=True)
+        (project / 'pom.xml').write_text('<project/>')
+        text = 'spring:\n  jpa:\n    hibernate:\n      ddl-auto: create-drop\n  datasource:\n    password: hunter2\n'
+        self.deny(self.invoke(project / 'src/main/resources/application.yml', text))
+        output = self.invoke(project / 'src/test/resources/application.yml', text)
+        if ACTION == 'guard-ddl':
+            self.assertIsNone(output)
+        else:
+            self.deny(output, decision='ask')
+        loose = self.root / 'src/test/notes/application.yml'  # no build file: relative to CLAUDE_PROJECT_DIR
+        output = self.invoke(loose, text)
+        if ACTION == 'guard-ddl':
+            self.assertIsNone(output)
+        else:
+            self.deny(output, decision='ask')
+
+    def test_ddl_test_configuration_and_unrelated_edits(self):
+        if ACTION != 'guard-ddl': self.skipTest('other hook')
+        for name in ('src/test/resources/application.yml', 'application-test.properties', 'src/main/resources/application-test-h2.yml'):
+            with self.subTest(name=name):
+                self.assertIsNone(self.invoke(self.root / name, 'spring.jpa.hibernate.ddl-auto: create-drop'))
+        path = self.root / 'application.properties'
+        path.write_text('server.port=8080\nspring.jpa.hibernate.ddl-auto=update\n')
+        self.assertIsNone(self.invoke(path, tool_input={'old_string':'8080', 'new_string':'8081'}))
+        self.deny(self.invoke(path, tool_input={'old_string':'update', 'new_string':'create'}))
 
     def test_stop_batches_edits_without_pending_markers(self):
         if ACTION != 'verify-on-stop': self.skipTest('other hook')
@@ -131,13 +242,71 @@ class HookTests(unittest.TestCase):
         self.assertEqual(output['decision'], 'block')
         self.assertIn('check (exit 4)', output['reason'])
         self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 1)
-        self.assertIsNone(self.invoke(stop_hook_active=True))
-        self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 1)
+        # After a Stop continuation, verify again but report without blocking (no loop).
+        output = self.invoke(stop_hook_active=True)
+        self.assertNotIn('decision', output)
+        self.assertIn('check (exit 4)', output['systemMessage'])
+        self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 2)
         # A failed check is never reusable.
         self.assertEqual(self.invoke()['decision'], 'block')
-        self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 2)
+        self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 3)
         wrapper.write_text('#!/bin/sh\necho warning\nexit 0\n')
+        self.assertIsNone(self.invoke(stop_hook_active=True))
         self.assertIsNone(self.invoke())
+
+    def test_stop_reports_skipped_discovery(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper(code=1)
+        (self.root/'pom.xml').write_text('<!DOCTYPE project><project/>')
+        self.assertIn('Unsafe or oversized POM', self.invoke()['systemMessage'])
+        self.assertFalse((self.root/'target/calls').exists())
+
+    def test_stop_never_runs_untrusted_ancestor_wrapper(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        shared = self.root / 'shared'
+        victim = shared / 'victim'
+        victim.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, state_path(victim), ignore_errors=True)
+        sentinel = self.root / 'planted'
+        (shared / 'pom.xml').write_text('<project><modules><module>victim</module></modules></project>')
+        (shared / 'mvnw').write_text(f'#!/bin/sh\ntouch "{sentinel}"\n')
+        shared.chmod(0o1777)
+        self.addCleanup(shared.chmod, 0o755)
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(victim))
+        run = lambda: subprocess.run(['bash', str(ROOT / 'hooks/scripts/verify-on-stop.sh')], input='{}',
+                                     capture_output=True, text=True, env=env)
+        self.assertIn('untrusted ancestor', json.loads(run().stdout)['systemMessage'])
+        (victim / 'pom.xml').write_text('<project/>')
+        (victim / 'mvnw').write_text('#!/bin/sh\nexit 0\n')
+        (victim / 'mvnw').chmod(0o755)
+        # Verified alone, and the refused reactor is reported rather than skipped silently.
+        warning = json.loads(run().stdout)['systemMessage']
+        self.assertIn(f'Ignored enclosing Maven reactor {shared}', warning)
+        self.assertIn('chmod go-w', warning)
+        self.assertFalse(sentinel.exists())
+
+    def test_stop_hangup_and_kill_never_orphan_build(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        signals = [signal.SIGHUP] + ([signal.SIGKILL] if sys.platform.startswith('linux') else [])
+        wrapper = self.wrapper()
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(self.root))
+        for number in signals:
+            with self.subTest(signal=number):
+                (self.root/'target/calls').unlink(missing_ok=True)
+                (self.root/'input.txt').write_text(str(number))  # defeat reuse
+                wrapper.write_text('#!/bin/sh\necho started >> target/calls\nsleep 1\necho survived > target/orphan\n')
+                proc = subprocess.Popen(['bash', str(ROOT / 'hooks/scripts/verify-on-stop.sh')], stdin=subprocess.PIPE,
+                                        stdout=subprocess.DEVNULL, env=env, start_new_session=True)
+                proc.stdin.write(b'{}')
+                proc.stdin.close()
+                deadline = time.monotonic() + 5
+                while not (self.root/'target/calls').exists():
+                    if time.monotonic() >= deadline: self.fail('hook build did not start')
+                    time.sleep(.02)
+                os.killpg(proc.pid, number)
+                proc.wait(timeout=5)
+                time.sleep(1.5)
+                self.assertFalse((self.root/'target/orphan').exists())
 
     def test_verify_maven(self):
         if ACTION != 'verify-on-stop': self.skipTest('other hook')
@@ -240,9 +409,13 @@ class HookTests(unittest.TestCase):
 
 if __name__ == '__main__':
     methods = {
-        'guard-secrets': ['test_secret'],
-        'guard-ddl': ['test_ddl'],
-        'verify-on-stop': ['test_stop_batches_edits_without_pending_markers', 'test_verify', 'test_verify_maven', 'test_mcp_verification_reused_by_stop', 'test_source_packages_named_build_target_docs', 'test_stop_sigterm_kills_child_session'],
+        'guard-secrets': ['test_secret', 'test_secret_only_flags_introduced_literals', 'test_secret_test_configuration_asks',
+                          'test_secret_names_files_and_separators', 'test_guard_input_cost_is_linear',
+                          'test_test_paths_are_relative_to_the_project'],
+        'guard-ddl': ['test_ddl', 'test_ddl_documents_keys_and_values', 'test_ddl_test_configuration_and_unrelated_edits',
+                      'test_guard_input_cost_is_linear', 'test_test_paths_are_relative_to_the_project'],
+        'verify-on-stop': ['test_stop_batches_edits_without_pending_markers', 'test_verify', 'test_verify_maven', 'test_mcp_verification_reused_by_stop', 'test_source_packages_named_build_target_docs', 'test_stop_sigterm_kills_child_session',
+                           'test_stop_reports_skipped_discovery', 'test_stop_never_runs_untrusted_ancestor_wrapper', 'test_stop_hangup_and_kill_never_orphan_build'],
         'lint-migration': ['test_lint', 'test_sql_policy_corpus'],
     }
     result = unittest.TextTestRunner().run(unittest.TestSuite(HookTests(name) for name in ['test_diagnostics', *methods[ACTION]]))

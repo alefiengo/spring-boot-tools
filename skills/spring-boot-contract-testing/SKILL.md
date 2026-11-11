@@ -79,7 +79,7 @@ public class UserClientPactTest {
         var user = tools.jackson.databind.json.JsonMapper.builder().build()
             .readTree(response.body());
         assertEquals(42, user.get("id").asInt());
-        assertEquals("user@example.com", user.get("email").asText());
+        assertEquals("user@example.com", user.get("email").asString());
     }
 }
 ```
@@ -176,9 +176,9 @@ response:
   matchers:
     body:
       - path: $.id
-        type: byType
+        type: by_type
       - path: $.email
-        type: byRegex
+        type: by_regex
         value: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-z]{2,}"
 ```
 

@@ -192,10 +192,16 @@ def activation(bundle):
     output = []
     for item in bundle.get('activationResults', []):
         raw = item.get('result')
-        passed = raw.get('passed') if isinstance(raw, dict) and raw.get('scored') is True else None
+        # A two-arm run reports Skill/with-only graders with scored: false as
+        # pass/fail indicators; keep that verdict instead of discarding it.
+        indicator = isinstance(raw, dict) and raw.get('scored') is False and (
+            item.get('indicatorOnly') is True or raw.get('withOnly') is True)
+        usable = isinstance(raw, dict) and (raw.get('scored') is True or indicator)
+        passed = raw.get('passed') if usable else None
         if passed is not None and type(passed) is not bool:
             raise ValueError('Malformed activation verdict')
         output.append({'id': item['id'], 'falseActivationCriterion': item['falseActivationCriterion'],
+                       'indicatorOnly': bool(indicator),
                        'passed': passed, 'falseActivation': (not passed) if passed is not None
                        and item['falseActivationCriterion'] else None,
                        'status': 'measured' if passed is not None else 'unavailable'})

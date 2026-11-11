@@ -29,7 +29,7 @@ rebuilds only the last layer.
 # syntax=docker/dockerfile:1
 
 # ── build stage ──────────────────────────────────────────────
-FROM maven:3.9-eclipse-temurin-25 AS build
+FROM maven:3.10-eclipse-temurin-25 AS build
 WORKDIR /workspace
 
 # Cache dependencies as their own layer
@@ -51,12 +51,12 @@ FROM eclipse-temurin:25-jre AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --home /app --shell /usr/sbin/nologin spring
 WORKDIR /app
-USER spring
 
 COPY --from=build /workspace/extracted/dependencies/ ./
 COPY --from=build /workspace/extracted/spring-boot-loader/ ./
 COPY --from=build /workspace/extracted/snapshot-dependencies/ ./
 COPY --from=build /workspace/extracted/application/ ./
+USER spring
 
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0"
 ENTRYPOINT ["java", "-jar", "application.jar"]
@@ -80,10 +80,10 @@ Set `tasks.bootJar { archiveClassifier.set("boot") }` in `build.gradle.kts` for 
 
 ### Rules
 
-- **`-Djarmode=tools ... extract`** is the Boot 3.3+/4.x way (`layertools` is
-  deprecated). Copy the four layer directories in that exact order —
+- **`-Djarmode=tools ... extract`** is the Boot 3.3+/4.x way (`layertools` was
+  deprecated in 3.3 and removed in 4.1). Copy the four layer directories in that exact order —
   `application/` last, it is the one that changes most.
-- **Never** run as root; `USER spring` before copying the app, not after.
+- **Never** run as root: end the runtime stage with `USER spring` so later `RUN` steps and the `ENTRYPOINT` run unprivileged. Copied files stay root-owned (read-only for the app) unless `--chown` is used; place root-only steps such as the AOT training run before `USER`.
 - **`JAVA_TOOL_OPTIONS`**, not `ENTRYPOINT`-baked flags: lets deployments
   override without rebuilding.
 - **`-XX:MaxRAMPercentage=75.0`** instead of fixed `-Xmx`: scales with the
@@ -184,7 +184,7 @@ POSTGRES_PASSWORD=dev-password
 - The app's healthcheck needs **Actuator exposed** at least `health`
   (see the spring-boot-observability skill), and `curl` present in the
   runtime image — install it explicitly in the runtime image when using this HTTP check.
-- **`develop.watch`** requires `docker compose up --watch` (Compose 2.22+):
+- **`develop.watch`** requires `docker compose up --watch` (Compose 2.25+) or `docker compose watch` (2.22+):
   rebuilds the image on source change. For faster iteration without rebuild,
   run the app with `./mvnw spring-boot:run` on the host and keep only the DB
   in compose — that is the recommended daily loop.

@@ -135,7 +135,7 @@ def diagnose(args):
     documents = {}
     for relative in ('.claude-plugin/plugin.json', '.claude-plugin/marketplace.json',
                      '.codex-plugin/plugin.json', '.mcp.json', 'codex/mcp.json',
-                     'mcp-server/package.json', 'mcp-server/package-lock.json'):
+                     'package.json', 'package-lock.json'):
         def load(relative=relative):
             documents[relative] = read_json(bundle_file(relative))
         check('json:' + relative, load)
@@ -160,7 +160,7 @@ def diagnose(args):
         legacy = documents['.mcp.json']['mcpServers']['spring-boot']
         require(legacy['command'] == 'node'
                 and legacy['args'] == ['${CLAUDE_PLUGIN_ROOT}/mcp-server/index.js']
-                and legacy['cwd'] == '${CLAUDE_PROJECT_DIR}'
+                and legacy.get('cwd', '${CLAUDE_PROJECT_DIR}') == '${CLAUDE_PROJECT_DIR}'
                 and legacy['env']['PROJECT_ROOT'] == '${CLAUDE_PROJECT_DIR}',
                 'Malformed Claude MCP registration')
         for path in ('codex/run.mjs', 'codex/launch.mjs', 'mcp-server/index.js',
@@ -175,9 +175,9 @@ def diagnose(args):
                 'Marketplace plugins must be an array of objects')
         entries = [item for item in market if item['name'] == 'spring-boot-tools']
         require(len(entries) == 1 and entries[0]['source'] == './', 'Malformed marketplace registration')
-        lock = documents['mcp-server/package-lock.json']
+        lock = documents['package-lock.json']
         versions = {name: documents[name]['version'] for name in (
-            '.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'mcp-server/package.json')}
+            '.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'package.json')}
         versions.update(marketplace=entries[0]['version'], lock=lock['version'],
                         lock_package=lock['packages']['']['version'])
         source = bundle_file('mcp-server/index.js').read_text()
@@ -187,7 +187,7 @@ def diagnose(args):
         require(all(isinstance(v, str) and re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][\w.-]+)?', v)
                     for v in versions.values()), 'Malformed version')
         require(len(set(versions.values())) == 1, f'Bundle versions disagree: {versions}')
-        package = documents['mcp-server/package.json']
+        package = documents['package.json']
         require(package['dependencies'] == lock['packages']['']['dependencies'],
                 'Package and lock dependency declarations disagree')
         return {'version': versions['server']}
@@ -195,15 +195,17 @@ def diagnose(args):
 
     def dependencies():
         require(node, 'Dependency resolution requires a supported Node executable')
-        declarations = documents['mcp-server/package.json']['dependencies']
+        declarations = documents['package.json']['dependencies']
         require(isinstance(declarations, dict) and bool(declarations)
                 and all(isinstance(name, str) and isinstance(value, str)
                         for name, value in declarations.items()),
                 'Package dependencies must be a nonempty object of version strings')
         names = [*declarations, '@modelcontextprotocol/server/stdio']
-        # Node 20.3 requires the flag both for import.meta.resolve and its parent
-        # URL argument. Resolve ESM import conditions, then stat: newer Node may
-        # return file URLs even when their target is missing. Only builtins load.
+        # Dependencies are installed at the plugin root: resolve from <root>/package.json
+        # so a leftover mcp-server/node_modules cannot satisfy the check. Node 20.3
+        # requires the flag both for import.meta.resolve and its parent URL argument.
+        # Resolve ESM import conditions, then stat: newer Node may return file URLs
+        # even when their target is missing. Only builtins load.
         code = """import {statSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 const parent=pathToFileURL(process.argv[1]).href;
@@ -215,8 +217,11 @@ const missing=names.filter(n=>{try{
 console.log(JSON.stringify({missing}));"""
         result = json.loads(probe([node['executable'], '--no-warnings',
                                   '--experimental-import-meta-resolve', '--input-type=module', '-e', code,
-                                  str(root / 'mcp-server/index.js'), json.dumps(names)], root))
+                                  str(root / 'package.json'), json.dumps(names)], root))
         require(not result['missing'], f'Missing MCP dependencies: {result["missing"]}; install locked dependencies separately')
+        if (root / 'mcp-server/node_modules').exists():
+            add('stale_dependencies', 'warning',
+                'mcp-server/node_modules shadows the plugin-root dependencies for the MCP server; remove it')
         return {'dependencies': names, 'scope': 'ESM import target resolution and file existence only; no dependency imports'}
     check('dependencies', dependencies)
 
@@ -249,6 +254,10 @@ console.log(JSON.stringify({missing}));"""
             expected = run(intended)
             require(Path(actual['root']).resolve() == Path(expected['root']).resolve(),
                     f'Workspace discovers {actual["root"]}, intended project discovers {expected["root"]}')
+            if Path(expected['root']).resolve() != intended:
+                # Legitimate for a module of a reactor; otherwise another build would run.
+                add('discovered_root', 'warning',
+                    f'Intended project {intended} is discovered as part of {expected["root"]}; builds and its wrapper run there')
             return {'discovery': actual, 'intendedProject': str(intended)}
         check('project_discovery', discover)
     else:

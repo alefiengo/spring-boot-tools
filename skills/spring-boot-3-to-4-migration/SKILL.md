@@ -20,7 +20,7 @@ Use `analyze_project` for an evidence-backed inventory: module/root, Boot/Framew
 
 Capture a baseline before edits: build/test results, startup/readiness, representative JSON requests/responses (dates, nulls, enums, errors, pagination), authentication/authorization outcomes and database schema/migration state. Preserve snapshots with the existing application revision.
 
-Separate stages: (1) stabilize supported Boot 3.5 and remove deprecations; (2) mechanical dependencies/imports/configuration; (3) adapt serialization/security/integrations; (4) runtime and consumer compatibility; (5) remove temporary migration tooling. Inspect the diff and run the relevant gate after each stage. Stop on an unresolved compatibility regression; do not combine it with unrelated refactors.
+Separate stages: (1) stabilize on the latest 3.5.x (OSS support ended 2026-06-30; commercial support runs to 2032-06-30, verified 2026-11-10) and remove deprecations; (2) mechanical dependencies/imports/configuration; (3) adapt serialization/security/integrations; (4) runtime and consumer compatibility; (5) remove temporary migration tooling. Inspect the diff and run the relevant gate after each stage. Stop on an unresolved compatibility regression; do not combine it with unrelated refactors.
 
 ## 1. Preparation
 
@@ -43,10 +43,11 @@ Before touching anything:
    - Custom configuration properties (`@ConfigurationProperties`) and extensive YAML.
    - Tests with deprecated annotations and Testcontainers < 2.
    - Removed modular starters (see §3).
+   - Flyway/Liquibase declared only as `flyway-core`/`liquibase-core`: Boot 4 needs `spring-boot-starter-flyway` / `spring-boot-starter-liquibase`, otherwise migrations silently stop running at startup.
 
 ## 2. Automated recipe (OpenRewrite)
 
-The `org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0` recipe does the mechanical work: upgrading the parent to Boot 4.0.x, Spring Framework 7, Spring Security 7, modular starters, renamed properties, BOM migrations, and test annotations.
+The `org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0` recipe does the mechanical work: upgrading the parent to Boot 4.0.x, Spring Framework 7, Spring Security 7, modular starters, renamed properties, BOM migrations, and test annotations. It includes `UpgradeSpringBoot_3_5`. After it, raise Boot to the current supported 4.x line (4.1.x as of 2026-11-10; 4.0.x OSS support ends 2026-12-31) and run `org.openrewrite.java.spring.boot4.SpringBootProperties_4_1`; there is no `UpgradeSpringBoot_4_1` recipe as of 2026-11-10.
 
 ```bash
 ./mvnw -U org.openrewrite.maven:rewrite-maven-plugin:run \
@@ -76,8 +77,11 @@ Run the app, fix every warning it logs, and **remove it** at the end.
 
 | Before (3.x)                        | After (4.x)                          |
 |-------------------------------------|--------------------------------------|
-| `spring-boot-starter-aop`          | `spring-boot-starter-aspectj`        |
-| `spring-boot-starter-webservices`  | modularized starter (verify)         |
+| `spring-boot-starter-aop`          | `spring-boot-starter-aspectj` (the recipe removes it instead when nothing uses `org.aspectj.lang.annotation`) |
+| `spring-boot-starter-web-services` | `spring-boot-starter-webservices`    |
+| `spring-boot-starter-web`          | `spring-boot-starter-webmvc` (old name deprecated) |
+| `spring-boot-starter-oauth2-resource-server` / `-client` | `spring-boot-starter-security-oauth2-resource-server` / `-client` |
+| `flyway-core` / `liquibase-core` only | `spring-boot-starter-flyway` / `spring-boot-starter-liquibase` |
 | Jackson 2 BOM (`jackson-bom.version`) | Jackson 3 is the default; Jackson 2 lives under `jackson-2-bom.version` |
 | Testcontainers 1.x                 | Testcontainers 2.x                   |
 | Spring Framework 6 / Security 6    | Spring Framework 7 / Security 7      |
@@ -93,10 +97,11 @@ Other underlying changes:
 Databind/core packages move from `com.fasterxml.jackson.*` to `tools.jackson.*`; shared Jackson annotations remain in `com.fasterxml.jackson.annotation`. Review the recipe diff rather than blindly replacing all imports. What the recipe does **not** catch:
 
 1. **Serialization defaults changed**: date formats and `null` handling change the shape of the JSON **without a compilation error**. Run the controller tests and compare the JSON output.
-2. **Consolidated modules**: registering custom modules changed; check any hand-built `JsonMapper`/`ObjectMapper` (`JsonMapper` is `tools.jackson.databind.json.JsonMapper`; `ObjectMapper` remains under `tools.jackson.databind`).
-3. **`catch (IOException)`** around serialization that silently swallowed errors: review the handling — the error model changed.
+2. **Mapper beans and modules**: an application `ObjectMapper` bean no longer replaces Boot's mapper; define a `JsonMapper` bean (`tools.jackson.databind.json.JsonMapper`) or a `JsonMapperBuilderCustomizer` (renamed from `Jackson2ObjectMapperBuilderCustomizer`). `@JsonComponent`/`@JsonMixin` are now `@JacksonComponent`/`@JacksonMixin`. Boot 4 registers every Jackson module on the classpath (`spring.jackson.find-and-add-modules=false` restores explicit registration).
+3. **Exceptions are unchecked**: `tools.jackson.core.JacksonException` extends `RuntimeException`, so a `catch (IOException)` around Jackson calls no longer catches parse/serialization failures (and may not compile). Catch `JacksonException` where handling is required.
 4. **Deprecated/removed Jackson annotations**: search for `@JsonSerialize`, mixins, and `Module`s registered via configuration.
-5. If some third-party HTTP client still requires Jackson 2, keep its explicitly required Jackson 2 libraries isolated and let Boot's Jackson 2 dependency management handle their versions where available. Do not replace shared annotations blindly.
+5. `spring.jackson.use-jackson2-defaults=true` is a temporary bridge to Boot 3 defaults; the `spring-boot-jackson2` module is deprecated and only a stop-gap.
+6. If some third-party HTTP client still requires Jackson 2, keep its explicitly required Jackson 2 libraries isolated and let Boot's Jackson 2 dependency management handle their versions where available. Do not replace shared annotations blindly.
 
 ## 5. Verification
 
@@ -130,6 +135,7 @@ Final checklist:
 - [ ] `spring-boot-properties-migrator` removed
 - [ ] Response JSON identical to pre-migration (or the change documented)
 - [ ] Testcontainers running on v2
+- [ ] Startup log shows Flyway/Liquibase validating the expected schema version
 - [ ] CI pipeline green on the target Java (25 LTS recommended, 17+ minimum)
 
 ## 6. If the project is further behind (3.0–3.3)
@@ -139,6 +145,6 @@ Migrate step by step: 3.0 → 3.2 → 3.4 → 3.5 → 4.0, using the correspondi
 ## References
 
 - [Official Spring Boot 4 migration guide](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide)
-- [OpenRewrite Boot 4 recipe](https://docs.openrewrite.org/recipes/java/spring/boot4/upgradespringboot_4_0)
+- [OpenRewrite Boot 4 recipe](https://docs.openrewrite.org/recipes/java/spring/boot4/upgradespringboot_4_0-community-edition)
 
 Replace `<verified-version>` with an explicit released recipe version before executing; inspect the recipe documentation and changelog for the chosen target.

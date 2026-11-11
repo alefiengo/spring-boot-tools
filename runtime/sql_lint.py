@@ -2,8 +2,10 @@
 
 Policies deliberately differ: the edit hook warns on all DELETE statements and
 transaction loops, while MCP reports empty/duplicate migrations as errors and
-only unbounded DELETE statements as risks. Preserve each adapter's established
-comment/string handling; this is heuristic lint, not a SQL parser.
+only unbounded DELETE statements as risks. The hook keeps string literals
+(dynamic SQL such as EXECUTE 'DROP ...' stays visible) but never treats comment
+markers inside them as comments; MCP removes both. This is heuristic lint, not
+a SQL parser.
 """
 import re
 
@@ -11,6 +13,8 @@ import re
 NAME = r'(?:([VU])(\d+(?:[._]\d+)*)|R)__([^/]+)\.sql'
 JS_WHITESPACE = ' \t\n\r\v\f\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
 JS_SPACE_TRANSLATION = str.maketrans({char: ' ' for char in JS_WHITESPACE})
+# One pass: a quoted '--' is not a comment and must not hide the rest of the line.
+HOOK_COMMENTS = re.compile(r"'(?:''|[^'])*'|/\*.*?\*/|--[^\n]*", re.S)
 HOOK_DESTRUCTIVE = ('Destructive SQL: IF EXISTS does not protect data. Review backups, dependencies and rollback before applying. '
                     'Never edit an already applied migration; add a new migration.')
 
@@ -30,10 +34,10 @@ def lint_hook(name, content):
     messages = []
     if migration_name(name)['type'] is None:
         messages.append('naming: expected V<version>__<description>.sql, U<version>__<description>.sql or R__<description>.sql')
-    sql = re.sub(r'/\*.*?\*/|--[^\n]*', '', content, flags=re.S)
+    sql = HOOK_COMMENTS.sub(lambda match: match.group(0) if match.group(0).startswith("'") else '', content)
     if re.search(r'\bBEGIN\b', sql, re.I) and re.search(r'\bCOMMIT\b', sql, re.I) and re.search(r'\bFOR\b[^;]*\bLOOP\b', sql, re.I):
         messages.append('BEGIN/COMMIT with LOOP: verify transaction handling is intentional')
-    if re.search(r'\b(?:DROP\s+(?:TABLE|COLUMN)|TRUNCATE\s+(?:TABLE\s+)?|DELETE\s+FROM)\b', sql, re.I):
+    if re.search(r'\b(?:DROP\s+(?:TABLE|COLUMN|SCHEMA|DATABASE|INDEX)|TRUNCATE\s+(?:TABLE\s+)?|DELETE\s+FROM)\b', sql, re.I):
         messages.append(HOOK_DESTRUCTIVE)
     return messages
 

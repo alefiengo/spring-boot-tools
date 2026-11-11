@@ -1,11 +1,11 @@
 ---
 name: spring-boot-codegen
 description: >
-  Guides generation of Spring Boot code using the project's Java and Boot versions:
-  JPA entities, REST controllers, services, repositories, DTOs, configuration,
-  and project-specific architecture conventions. Use when asked to create
-  endpoints, entities, DTOs, mappers, configurations, or any new Spring Boot
-  project code.
+  Generates code inside an existing Spring Boot application using its Java and
+  Boot versions: REST controllers, services, repositories, DTOs, mappers and
+  configuration. Use when asked to add endpoints or application classes. Not
+  for scaffolding a new project (spring-boot-initializr) or schema/migration
+  design (spring-boot-database).
 ---
 
 # Spring Boot Code Generation
@@ -14,9 +14,7 @@ description: >
 
 Guides code generation following idiomatic Spring Boot conventions.
 
-## Activation
-
-Use this skill when asked to generate entities, REST endpoints, services, repositories, DTOs, configurations, or other Spring Boot application code. Skill selection depends on the host; explicit invocation is available.
+## Scope
 
 For a request to scaffold a new project, use [Initializr](../spring-boot-initializr/SKILL.md) only when explicitly requested and its destination checks pass. Adding code to an existing application never authorizes initializing another project.
 
@@ -74,7 +72,7 @@ public record Shipped(Instant shippedAt, String trackingCode) implements OrderSt
 public record Cancelled(Instant cancelledAt, String reason) implements OrderState {}
 ```
 
-Domain logic as a `switch` pattern match (exhaustive, no `default` needed with sealed types):
+Domain logic as a `switch` pattern match (exhaustive, no `default` needed with sealed types). Requires Java 21+ (record patterns, `switch` patterns) and Java 22+ for the unnamed `_`; on Java 17 use `instanceof` checks or a visitor:
 
 ```java
 public String describe(OrderState state) {
@@ -101,7 +99,7 @@ When generating a persistence-backed aggregate, preserve the existing entity acc
 - Follow the existing resource naming and versioning contract; `GET /api/v1/users` is an example.
 - Use `@RestController`, `@RequestMapping("${api.base-path}/v1/<resource>")`
 - DTOs in request parameters, never JPA entities.
-- Pagination: accept `page` (0-based) and `size`, return `Page<DTO>` wrapped with metadata.
+- Pagination: accept `page` (0-based) and `size`, and return a stable page representation: the project's existing envelope, `PageResponse<DTO>` from [API contracts](../spring-boot-api-contracts/SKILL.md), or `org.springframework.data.web.PagedModel<DTO>`. Never serialize `Page`/`PageImpl` directly (or set `spring.data.web.pageable.serialization-mode=via-dto`).
 
 ```java
 @RestController
@@ -111,7 +109,7 @@ public class UserController {
     private final UserService userService;
 
     @GetMapping
-    public ResponseEntity<Page<UserDTO>> search(
+    public ResponseEntity<PagedModel<UserDTO>> search(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             UserFilter filter) { ... }

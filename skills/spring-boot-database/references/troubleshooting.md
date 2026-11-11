@@ -11,8 +11,11 @@ inspect existing configuration and obtain execution authorization where needed.
 # Direct connection test from the host with psql/pg_isready:
 pg_isready -h localhost -p 5432
 
-# Inspect the connection pool config in the app
-curl http://localhost:8080/actuator/env/spring.datasource.hikari.maximum-pool-size
+# Inspect the effective pool size through metrics (requires the metrics
+# endpoint to be exposed and protected). Do not expose `env` for diagnosis;
+# read the configured value from the application's configuration source.
+curl -s http://localhost:8080/actuator/metrics/hikaricp.connections.max
+curl -s http://localhost:8080/actuator/metrics/hikaricp.connections.pending
 ```
 
 ### Failed migrations
@@ -41,11 +44,15 @@ WHERE state != 'idle'
 ### Slow queries
 
 ```yaml
-# Enable slow query logging in application-local.yml
+# Log statements slower than 500 ms (application-local.yml)
+spring:
+  jpa:
+    properties:
+      hibernate.log_slow_query: 500
 logging:
   level:
-    org.hibernate.SQL: DEBUG
-    org.hibernate.stat: DEBUG
+    org.hibernate.SQL_SLOW: INFO
+    # org.hibernate.SQL: DEBUG logs every statement; use only for short local sessions
 ```
 
 Better yet, keep `spring.jpa.show-sql: false` and use `pg_stat_statements` in PostgreSQL for production:

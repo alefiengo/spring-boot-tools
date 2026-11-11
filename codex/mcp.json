@@ -6,7 +6,25 @@
         "-e",
         "const root = process.env.SBT_PLUGIN_ROOT; if (!root || !require('node:path').isAbsolute(root)) { console.error('Launch Codex with node /absolute/plugin/path/codex/run.mjs (SBT_PLUGIN_ROOT is required).'); process.exit(1); } import(require('node:url').pathToFileURL(require('node:path').join(root, 'codex', 'launch.mjs')).href).catch(error => { console.error(error.message); process.exitCode = 1; });"
       ],
-      "env_vars": ["SBT_PLUGIN_ROOT", "SPRING_BOOT_APP_PORT"]
+      "env_vars": [
+        "SBT_PLUGIN_ROOT",
+        "SPRING_BOOT_APP_PORT",
+        "JAVA_HOME",
+        "JDK_JAVA_OPTIONS",
+        "JAVA_TOOL_OPTIONS",
+        "MAVEN_OPTS",
+        "MAVEN_ARGS",
+        "MAVEN_USER_HOME",
+        "M2_HOME",
+        "GRADLE_OPTS",
+        "GRADLE_USER_HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy"
+      ]
     }
   }
 }

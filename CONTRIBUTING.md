@@ -28,15 +28,17 @@ alone; exercise the actual launcher with an MCP protocol client.
   runtime inspection.
 
 Update the README catalog and registrations when adding, renaming or removing
-components. Keep plugin, marketplace, MCP package/lockfile and server versions
-aligned. Preserve dependency lockfiles and the license.
+components. Keep plugin, marketplace, root `package.json`/`package-lock.json` and server
+versions aligned. Preserve dependency lockfiles and the license.
 
 ## Local validation
 
-Install the MCP dependencies and run deterministic checks:
+Install the MCP dependencies at the repository root (Claude Code's automatic
+installer only reads a `package.json` and lockfile at the plugin root, so
+`mcp-server/` holds no dependency manifest) and run deterministic checks:
 
 ```bash
-npm ci --prefix mcp-server
+npm ci
 node --check mcp-server/index.js
 python3 -m py_compile runtime/project_runtime.py hooks/scripts/hook-runtime.py
 bash tests/run-all.sh
@@ -85,7 +87,7 @@ Automatic Dependabot updates are disabled because they execute through GitHub
 Actions. Retain the lockfile and audit the MCP dependencies locally:
 
 ```bash
-npm audit --prefix mcp-server
+npm audit
 ```
 
 Review npm and Maven dependency updates manually and run the affected checks.

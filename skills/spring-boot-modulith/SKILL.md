@@ -18,7 +18,7 @@ Use this skill when module boundaries, event publication or Modulith adoption ar
 
 ## Concept
 
-Spring Modulith is Spring's official approach (recommended in the Spring Boot documentation itself) for structuring a monolith **with boundaries**. It is not hexagonal; it is **package-by-feature with enforcement**.
+Spring Modulith is a Spring project (referenced from the Spring Boot code-structure guidance) for structuring a monolith **with boundaries**. It is not hexagonal; it is **package-by-feature with enforcement**.
 
 ```
 com.example.myapp/

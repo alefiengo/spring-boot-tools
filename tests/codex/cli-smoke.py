@@ -4,12 +4,15 @@
 Requires Codex CLI, Node and the already installed mcp-server dependencies.
 Not part of test-basic.sh: CI need not install/authenticate a Codex CLI.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
 import queue
 import signal
 import subprocess
+import pwd
+import shutil
 import tempfile
 import threading
 
@@ -17,6 +20,15 @@ import threading
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = {'actuator_health', 'analyze_project', 'check_migrations',
          'initialize_project', 'openapi_endpoints', 'run_build', 'run_tests'}
+
+
+def remove_build_state(base):
+    """Delete runtime build state for temporary roots (mirrors runtime state_dir)."""
+    state = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.cache' / 'spring-boot-tools'
+    for folder, children, _ in os.walk(base):
+        children[:] = [name for name in children if not (Path(folder) / name).is_symlink()]
+        key = hashlib.sha256(str(Path(folder).resolve()).encode()).hexdigest()
+        shutil.rmtree(state / f'build-{key}', ignore_errors=True)
 
 
 def main():
@@ -37,6 +49,8 @@ def main():
                 'name': 'spring-boot-tools',
                 'source': {'source': 'local', 'path': './spring-boot-tools'},
                 'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_USE'},
+                # Codex plugin packaging requires a category on every entry.
+                'category': 'Developer Tools',
             }],
         }))
         app = base / 'application with spaces'
@@ -44,9 +58,17 @@ def main():
         (app / 'pom.xml').write_text(
             '<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId>'
             '<artifactId>app</artifactId><version>1</version></project>')
+        # The wrapper reports the toolchain variables Codex forwarded to the build.
+        # TZ comes from Codex's own default allowlist, not from env_vars.
+        (app / 'mvnw').write_text('#!/bin/sh\nprintf "JAVA_HOME=%s MAVEN_OPTS=%s TZ=%s UNSET=%s\\n" '
+                                  '"$JAVA_HOME" "$MAVEN_OPTS" "$TZ" "${GRADLE_OPTS+set}"\n')
+        (app / 'mvnw').chmod(0o755)
         # No credentials copied and no global installation/config changes.
         environment = {**os.environ, 'CODEX_HOME': str(home),
-                       'PROJECT_ROOT': '/stale-project-context'}
+                       'PROJECT_ROOT': '/stale-project-context',
+                       'JAVA_HOME': '/opt/sbt-smoke-jdk', 'MAVEN_OPTS': '-Dsbt.smoke=1',
+                       'TZ': 'Etc/UTC'}
+        environment.pop('GRADLE_OPTS', None)  # listed but unset: must stay absent
         with (base / 'stderr.log').open('w+') as errors:
             child = subprocess.Popen(
                 ['node', str(ROOT / 'codex/run.mjs'), 'app-server', '--stdio'],
@@ -121,7 +143,14 @@ def main():
                 assert not payload.get('isError'), payload
                 analyzed = json.loads(payload['content'][0]['text'])
                 assert Path(analyzed['root']).resolve() == app.resolve(), analyzed
-                print(f'PASS {version}: 16 skills, no hooks, 7 MCP tools, actual application cwd; no model turns')
+                built = request('mcpServer/tool/call', {
+                    'threadId': thread, 'server': 'spring-boot',
+                    'tool': 'run_build', 'arguments': {'task': 'compile'},
+                })
+                output = json.loads(built['content'][0]['text'])['stdout']
+                assert output == 'JAVA_HOME=/opt/sbt-smoke-jdk MAVEN_OPTS=-Dsbt.smoke=1 TZ=Etc/UTC UNSET=\n', output
+                print(f'PASS {version}: 16 skills, no hooks, 7 MCP tools, actual application cwd, '
+                      'forwarded build toolchain; no model turns')
             finally:
                 # Kill only this isolated process group, including wrapper/MCP.
                 try:
@@ -129,6 +158,7 @@ def main():
                 except ProcessLookupError:
                     pass
                 child.wait(timeout=10)
+                remove_build_state(base)
 
 
 if __name__ == '__main__':

@@ -1,10 +1,11 @@
 ---
 name: spring-boot-testing
 description: >
-  Guides writing and running tests in Spring Boot projects: unit tests with
-  JUnit 5 + AssertJ + Mockito, @WebMvcTest for controllers, @DataJpaTest for
-  repositories, @SpringBootTest + Testcontainers for integration, and coverage.
-  Use when asked for tests, coverage, mocking, or flakiness.
+  Writes and runs tests for Spring Boot applications with the project's
+  existing test stack: unit tests, @WebMvcTest/@DataJpaTest slices,
+  @SpringBootTest with Testcontainers, coverage and flaky tests. Use when tests
+  are requested for Spring Boot code; not for plain Java or JUnit code without
+  Spring.
 ---
 
 # Testing in Spring Boot
@@ -15,11 +16,6 @@ Guides writing and running tests in Spring Boot projects with Maven/Gradle.
 
 Choose tests from behavior and risk: unit for pure logic, slices for framework boundaries, integration for persistence/security wiring, contracts for independently released services. Reuse `run_tests` and its fresh reports; coordinate with hooks and PR review so unchanged sources are verified once. The test-writer agent should deliver observable assertions, not tests mirroring implementation details.
 
-
-## Activation
-
-Activates when asked to generate tests, or when discussing coverage, mocking, integration, or when you say "test this <component>".
-
 ## Default stack
 
 Inspect the build and existing tests first. Reuse their framework, assertion
@@ -29,7 +25,7 @@ solely to match this guide.
 
 | Layer           | Framework                        | Mocking            |
 |-----------------|----------------------------------|--------------------|
-| Unit tests      | JUnit 5 + AssertJ                | Mockito            |
+| Unit tests      | JUnit Jupiter (JUnit 6 under Boot 4; JUnit 5 under Boot 3) + AssertJ | Mockito |
 | Repository      | `@DataJpaTest`                   | —                  |
 | Controller      | `@WebMvcTest`                    | REST Test Client / MockMvc + Mockito |
 | Integration     | `@SpringBootTest`                | Testcontainers     |
@@ -37,7 +33,7 @@ solely to match this guide.
 
 Virtual threads are opt-in with `spring.threads.virtual.enabled=true`. Test executor configuration is separate; exercise concurrency-sensitive behavior with the same setting used in production.
 
-For Boot 4 MVC/JPA slices add the relevant test-scoped modular starters (`spring-boot-starter-webmvc-test`, `spring-boot-starter-data-jpa-test`) alongside the project test setup. Testcontainers integration needs `spring-boot-testcontainers`, `org.testcontainers:testcontainers-junit-jupiter` and `org.testcontainers:testcontainers-postgresql` under Boot-managed versions. Import Boot 4 slice annotations from `org.springframework.boot.webmvc.test.autoconfigure` / `org.springframework.boot.data.jpa.test.autoconfigure`; do not copy Boot 3 package names.
+For Boot 4 MVC/JPA slices add the relevant test-scoped modular starters (`spring-boot-starter-webmvc-test`, `spring-boot-starter-data-jpa-test`) alongside the project test setup. Testcontainers integration needs `spring-boot-testcontainers`, `org.testcontainers:testcontainers-junit-jupiter` and `org.testcontainers:testcontainers-postgresql` under Boot-managed versions. Import Boot 4 slice annotations from `org.springframework.boot.webmvc.test.autoconfigure` / `org.springframework.boot.data.jpa.test.autoconfigure`; `TestEntityManager` is in `org.springframework.boot.jpa.test.autoconfigure`. Do not copy Boot 3 package names.
 
 ## Conventions
 
@@ -102,7 +98,7 @@ class UserRepositoryTest {
 
 ### 5. Controller tests (`@WebMvcTest`)
 
-Use `MockMvc` for MVC slices. For a running-server integration test, use `@SpringBootTest(webEnvironment = RANDOM_PORT)` plus `@AutoConfigureRestTestClient` and Boot's REST test-client test starter. Do not assume a RestTestClient bean in a `@WebMvcTest` slice.
+Use `MockMvc` for MVC slices, or add `@AutoConfigureRestTestClient` for a MockMvc-backed `RestTestClient`. For a running-server integration test, use `@SpringBootTest(webEnvironment = RANDOM_PORT)` with `@AutoConfigureRestTestClient` (`org.springframework.boot.resttestclient.autoconfigure`, provided by `spring-boot-starter-webmvc-test`). Without that annotation, do not assume a `RestTestClient` bean.
 
 ```java
 @WebMvcTest(UserController.class)

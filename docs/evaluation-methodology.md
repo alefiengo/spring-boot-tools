@@ -8,21 +8,31 @@ not Spring Boot task performance. The coverage inventory is
 
 ## Evidence and coverage
 
-The original suite contains 17 cases. They remain unchanged: applied-migration,
+The original suite contains 17 cases. Their prompts are unchanged except
+pr-docs-selectivity, which now starts with the sb-pr-review command; most gained
+a skill-fired criterion and five had their single rubric split per criterion,
+so bundles frozen before 2026-11-10 do not match current criteria. The cases
+are applied-migration,
 bad-migration-name, boot4-tracing, codegen-controller, contract-release-cycle,
 cookie-bearer-security, gatling-profile, jwt-api, load-acceptance-cycle,
 migration-compatibility-gates, modulith-boundaries, no-hijack-generic-java,
 no-monitor-readiness, performance-evidence-first, postgres18-volume,
-pr-docs-selectivity and test-writer-behavior. Two new Initializr cases bring the
-suite to 19. The positive case requires actual guarded initialization evidence;
-a missing capability/network or refused context cannot count as successful
-initialization. The refusal case supplies explicit existing-project scenario
-context and requests no writes. Neither new case has been run against a model.
+pr-docs-selectivity and test-writer-behavior. Eight unrun cases bring the suite
+to 25: two Initializr cases, `test-writer-agent`, `build-run-module-failure`,
+`api-contracts-error-shape`, `ci-verify-gate`, `no-hijack-plain-junit` and
+`no-hijack-node-ci`. The Initializr cases answer `initialize_project` from a case
+mock: the positive case checks the guarded call input and the reply's fidelity
+to the returned result; a refused or unavailable tool cannot count as
+successful initialization. The refusal case makes the tool available and
+requires that it is never called. None of the new cases has been run against a
+model.
 
 A relevant prompt is not proof that a skill activated, that an agent was invoked,
-or that either improved an answer. Only three original criteria explicitly
-measure Skill activation/selectivity; the naming regex in bad-migration-name is
-a separate deterministic criterion. Retain original grader results alongside
+or that either improved an answer. Each positive case now has a `skill-fired`
+criterion and each no-hijack case a selectivity criterion; the map lists them
+under `explicitActivationCriteria`. `codegen-controller` and `test-writer-agent`
+allow the Agent tool, but only `test-writer-agent` grades an agent dispatch, so
+six agents have no graded behavioral case. Retain original grader results alongside
 response-quality judgments. The no-hijack case has only a tool criterion and can
 be frozen without inventing an LLM quality criterion. Quality judging requires
 at least one actual LLM criterion.
@@ -108,12 +118,13 @@ time/turn limits, and record actual tool/plugin loading. Fresh directories and
 checksums alone cannot stop an unrestricted model tool from reading parent or
 sibling paths. This CLI does not execute or sandbox a model. The full Initializr
 positive experiment also needs its real MCP dependency/runtime prerequisites and
-network access; offline preparation cannot provide those results. In a later
-explicitly budgeted live run, grant the actual initializer tool with --allow-tools,
-enable real MCP servers with --allow-real-servers and authorize scaffolding with
---scaffold as required by the installed evaluator. --trust-plugin alone enables
-neither real servers nor scaffolding. Verify exact tool names from the loaded
-host; this case intentionally does not invent a portable MCP tool identifier.
+network access; offline preparation cannot provide those results. By default
+the case answers from its mock. In a later explicitly budgeted live run, pass
+--mocks off and grant the tool with
+--allow-tools "mcp__plugin_spring-boot-tools_spring-boot__initialize_project"
+(the documented mcp__plugin_<plugin>_<server>__<tool> form; confirm it in the
+run's tool list). --trust-plugin alone enables neither real servers nor tool
+grants.
 
 ## Freeze and compare actual evidence
 
@@ -123,11 +134,22 @@ remain usable for independent judging but cannot establish a pinned comparison.
 For a pinned comparison the generation report must record modelRequested, effort,
 claudeVersion and executionLimits (timeoutSeconds and maxTurns); these must match
 the preparation. Record them from the actual invocation, not from assumptions.
+The documented `claude plugin eval` result fixes only document-level fields
+(`claudeVersion`, `costUsd`, `durationSeconds`, `cases[].arms.with[]`). The
+freezer takes executionLimits from the case's recorded `timeoutSeconds` and
+`maxTurns`, which have no command-line override. The evaluator records no effort
+and no per-run requested model (`--model` can override a case's model), so a
+pinned comparison of its report fails closed on those fields.
 Each generation result supplies a complete response or the existing unambiguous
-scored-grader evidence. Generation usage is read only from that result, never
-from report-wide usage that might contain graders. Supported telemetry is usage
-input_tokens/output_tokens/cache fields, total_cost_usd or costUSD, duration_ms
-or durationMs, and reported model/modelResolved/modelUsage. Missing fields remain
+scored-grader evidence. The evaluator's result has no response field, so the
+freezer uses the scored LLM graders' evidence; whether that evidence is always
+the complete final message has not been confirmed against a real run. Generation
+usage is read only from that result, never from report-wide usage that might
+contain graders. Supported telemetry is usage input_tokens/output_tokens/cache
+fields, total_cost_usd, costUSD or costUsd, duration_ms, durationMs or
+durationSeconds, and reported model/modelResolved/modelUsage. In a two-arm run,
+Skill and with-only criteria are reported with `scored: false`; their verdict is
+kept as an indicator rather than discarded. Missing fields remain
 unavailable, including resolved model identity. Preserve original source reports
 and runner logs to interpret the telemetry's scope.
 
@@ -183,7 +205,8 @@ criterion or snapshot equality.
 bash tests/evaluations/test-basic.sh
 ```
 
-The synthetic two-arm fixture and regression tests exercise provenance, source
+The synthetic two-arm fixture, a fixture in the documented `claude plugin eval`
+result shape and the regression tests exercise provenance, source
 preservation, leakage exclusions, selected skill/agent removal, malformed input,
 activation-only cases, frozen judge errors, model comparability, unavailable
 telemetry and ceiling handling. They make no model calls. The director owns

@@ -33,6 +33,8 @@ an unchanged line may qualify when the changed path newly triggers it.
 | `sb-migration-reviewer` | Migration SQL/configuration changed: schema/history compatibility, destructive changes and locking. |
 | `sb-docker-reviewer` | Container, Compose or CI artifacts changed: packaging, startup, persistence and verification/publication boundaries. |
 
+On Claude Code these agents are registered as `spring-boot-tools:<agent-name>` (for example `spring-boot-tools:sb-code-reviewer`); use that name when delegating.
+
 Classify by function, not extension: an executable OpenAPI/schema, security
 configuration or build dependency change is not merely documentation.
 

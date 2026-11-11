@@ -2,19 +2,17 @@
 name: spring-boot-build-run
 description: >
   Guides compilation, running, profiles and dependency/build troubleshooting in Spring Boot projects with Maven or
-  Gradle. Use when asked to build, run the app, diagnose build errors,
-  configure profiles, or inspect logs.
+  Gradle. Use when a Spring Boot application must be built or run, a build or
+  startup failure diagnosed, profiles switched or dependencies added/removed.
+  Not for non-Spring Java builds; runtime health, log and trace diagnosis
+  belongs to spring-boot-observability.
 ---
 
 # Build & Run in Spring Boot
 
 Guides compilation, execution, profile configuration, logs, and dependency management in Spring Boot.
 
-> Assume **Spring Boot 4.x** on **Java 25 LTS**. Spring Boot 4.1 supports Java 17–26; recommend 25 LTS for new projects.
-
-## Activation
-
-Activates when you ask to build, run, switch profiles, inspect application startup failures, add/remove dependencies, or diagnose build/run problems.
+> Read the project's Boot and Java versions first and keep them. The Java 25 / Boot 4 snippets below apply to new projects or projects already on that line. Spring Boot 4.1.2 requires Java 17+ and is compatible up to Java 27 (verified 2026-11-10); check the system requirements of the selected patch release.
 
 ## Discover once, execute once
 
@@ -30,7 +28,7 @@ When MCP is unavailable, use the shared CLI below for finite builds. It accepts 
 
 ### Compile
 
-Compiler setup (Java 25 toolchain, release 25 — no explicit maven-compiler-plugin version needed, Boot's parent manages it):
+Compiler setup for a Java 25 project (adapt to the project's release; no explicit maven-compiler-plugin version needed, Boot's parent manages it):
 
 ```xml
 <!-- Maven: pom.xml properties -->
@@ -49,11 +47,13 @@ java {
 ```
 
 ```bash
-# Set this to the installed plugin directory from the loaded skill's location
-# (two parents above this skill folder), not the application cwd.
-# Codex does not guarantee CODEX_PLUGIN_ROOT in your shell. Use the resolved
-# absolute path; Claude users may use their supplied CLAUDE_PLUGIN_ROOT.
-SBT_PLUGIN_ROOT='/absolute/path/to/spring-boot-tools'
+# Claude Code writes the plugin directory into the value below when this skill
+# loads; the shell environment has no plugin-root variable. Codex performs no
+# substitution: replace the value with the absolute plugin directory (two
+# levels above this skill folder), or skip this line when an absolute
+# SBT_PLUGIN_ROOT is already exported (codex/run.mjs sets it for its child
+# process). Single quotes make an unreplaced value fail visibly.
+SBT_PLUGIN_ROOT='${CLAUDE_PLUGIN_ROOT}'
 # Identify root/tool/wrapper/modules; paths in these JSON examples are illustrative.
 python3 "${SBT_PLUGIN_ROOT}/runtime/project_runtime.py" <<'JSON'
 {"action":"discover","projectRoot":"/path/to/project"}
@@ -157,7 +157,7 @@ Maven also needs `org.mapstruct:mapstruct-processor:1.6.3` under the compiler pl
 | Port already in use         | Another instance running                     | Inspect the owning process; stop only the intended app |
 | Bean not found              | Component not scanned                        | Check `@ComponentScan`      |
 | DB connection refused       | Endpoint/credentials/network or container not ready                   | Inspect configured JDBC target and connectivity                |
-| CORS error                  | Missing `@CrossOrigin` or `allowed-origins`  | Configure in SecurityFilter |
+| CORS error                  | Missing `@CrossOrigin` or `allowed-origins`  | Enable `http.cors(...)` with a `CorsConfigurationSource` bean named `corsConfigurationSource` (see security hardening) |
 | Unexplained 401             | Expired or malformed JWT                     | Check issuer, audience, signing keys and token expiry          |
 
 For container workflows use [Docker](../spring-boot-docker/SKILL.md), pipeline design [CI](../spring-boot-ci/SKILL.md), and runtime health/log/trace diagnosis [observability](../spring-boot-observability/SKILL.md). Build/run owns commands and startup failures; those skills own their domain configuration.
