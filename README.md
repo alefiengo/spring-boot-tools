@@ -315,10 +315,14 @@ terminal, multiplexer, SSH and VS Code IPC handles) and, only when Git tracks th
 project's build descriptors and wrappers, untracked files that Git ignores, so a
 hook and an MCP call from different sessions can share a result. Sources under
 `src/`, build configuration (`pom.xml`, `build.gradle*`, `settings.gradle*`,
-`gradle.properties`, `.mvn/**`, `gradle/**`) and wrappers stay inputs even when
+`gradle.properties`, `.mvn/**`, `gradle/**`), Spring Boot's default
+configuration files (`application*.{yml,yaml,properties}` at each module root,
+in `config/` and its immediate subdirectories) and wrappers stay inputs even when
 ignored; other ignored files, such as a local `.env` outside `src/`, do not
 invalidate reuse. When Git cannot report ignored files, or does not track those
-files, the runtime falls back to counting them. When inputs differ the result lists up to 20
+files, the runtime falls back to counting them. Unreadable subtrees inside
+ignored directories are skipped, and a walk of more than 100 000 entries
+disables reuse (the build still runs). When inputs differ the result lists up to 20
 `changedInputs` (with `changedInputsTruncated`). The shared
 runtime serializes plugin builds for a project and captures test reports
 inside that lock.

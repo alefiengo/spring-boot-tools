@@ -162,13 +162,19 @@ applies only when Git tracks the project's build descriptors and wrappers
 (`git ls-files --error-unmatch` finds every one present in the root); otherwise
 the conservative walk counts ignored files. Even then, sources under `src/`,
 build configuration (`pom.xml`, `build.gradle*`, `settings.gradle*`,
-`gradle.properties`, `.mvn/**`, `gradle/**`) and wrappers always stay inputs,
-ignored or not; other ignored files, such as a local `.env` outside `src/`, do
+`gradle.properties`, `.mvn/**`, `gradle/**`), Spring Boot's default
+configuration files (`application*.{yml,yaml,properties}` at each module root,
+in `config/` and in its immediate subdirectories) and wrappers always stay
+inputs, ignored or not; other ignored files, such as a local `.env` outside `src/`, do
 not invalidate reuse, so an ignored file that a build reads must be tracked or
 the run forced. The runtime asks Git for them from the project root with a
 2-second, 8 MiB, 50 000-entry bound and falls back to the conservative walk when
 Git is unavailable, errors or exceeds a bound; that fallback can cause extra
-builds. The environment part also omits the host-injected variables `CLAUDECODE`,
+builds. Inside an ignored directory the walk only looks for those protected
+entries (and nested modules or sources); a subtree it cannot read there is
+skipped, while read errors elsewhere still invalidate the fingerprint. A walk
+that passes 100 000 entries gives up: the build still runs, but no reuse is
+allowed and no partial verification is recorded. The environment part also omits the host-injected variables `CLAUDECODE`,
 `AI_AGENT`, `GIT_EDITOR`, `COREPACK_ENABLE_AUTO_PIN`, `WSL_INTEROP` and
 `WARP_TERMINAL_SESSION_UUID`; an explicit `${VAR}` reference in a project file
 brings the value back.
