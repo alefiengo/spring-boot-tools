@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -59,7 +60,7 @@ class HookTests(unittest.TestCase):
         env = {key: value for key, value in os.environ.items() if not key.startswith('CLAUDE_PLUGIN_OPTION_') and key != 'CLAUDE_ENV_FILE'}
         env.update(options, CLAUDE_PROJECT_DIR=str(self.root))
         result = subprocess.run(['bash', str(ROOT / 'hooks/scripts' / (action+'.sh'))],
-                                input=json.dumps(data), capture_output=True, text=True, env=env, cwd=self.root)
+                                input=json.dumps(data), capture_output=True, text=True, env=env, cwd=self.root, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout) if result.stdout else None
 
@@ -132,6 +133,31 @@ class HookTests(unittest.TestCase):
         for name in ('.env', '.env.example'):
             with self.subTest(name=name, placeholder=True):
                 self.assertIsNone(self.invoke(self.root / name, 'POSTGRES_USER=\nPOSTGRES_PASSWORD=\nAPI_TOKEN=<your-token>\n'))
+
+    def test_secret_quotes_blocks_and_references(self):
+        if ACTION != 'guard-secrets': self.skipTest('other hook')
+        # dotenv keeps single-quoted values literally, so '${VAR}' is not a placeholder there.
+        for name, decision in (('.env', 'ask'), ('.env.example', 'deny'), ('db.env', 'ask')):
+            with self.subTest(name=name):
+                self.deny(self.invoke(self.root / name, "DB_PASSWORD='${DB_PASSWORD}'"), decision=decision)
+                self.deny(self.invoke(self.root / name, "DB_PASSWORD='${DB_PASSWORD:-}' # literal"), decision=decision)
+        for name, text in (('.env', 'DB_PASSWORD="${DB_PASSWORD}"'), ('.env', 'DB_PASSWORD=${DB_PASSWORD}'),
+                           ('.env', "DB_PASSWORD=''"), ('.env', "API_KEY='<your-key>'"),
+                           ('docker-compose.yml', "services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'"),
+                           ('application.yml', "password: '${DB_PASSWORD}'")):
+            with self.subTest(text=text):
+                self.assertIsNone(self.invoke(self.root / name, text))
+        yaml = self.root / 'application.yml'
+        # A block scalar indicator on the line after the key is flagged like 'password: |'.
+        for text in ('password:\n  |\n    hunter2', 'spring:\n  password:\n    >-\n      hunter2', 'secret: |\n  hunter2'):
+            with self.subTest(text=text):
+                self.deny(self.invoke(yaml, text))
+        # Resource references are exempt on the next line as on the same line.
+        for text in ('credentials: classpath:creds.json', 'credentials:\n  classpath:creds.json',
+                     'jwt:\n  private-key:\n    file:/etc/keys/jwt.pem', 'signing-key:\n  "classpath:jwt.key"'):
+            with self.subTest(text=text):
+                self.assertIsNone(self.invoke(yaml, text))
+        self.deny(self.invoke(yaml, 'credentials:\n  literal-credential'))
 
     def test_secret_urls_tokens_and_compose(self):
         if ACTION != 'guard-secrets': self.skipTest('other hook')
@@ -637,6 +663,150 @@ class HookTests(unittest.TestCase):
         self.assertEqual(output['decision'], 'block')
         self.assertIn('Build inputs changed during verification', output['reason'])
 
+    def controlled_wrapper(self):
+        """Mock build controlled from outside the project, so switching outcomes keeps the fingerprint."""
+        control = tempfile.TemporaryDirectory()
+        self.addCleanup(control.cleanup)
+        wrapper = self.wrapper()
+        wrapper.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> target/calls\n'
+                           f'[ -f {control.name}/log ] && {{ mkdir -p logs; echo line >> logs/app.log; }}\n'
+                           f'[ -f {control.name}/fail ] && exit 1\n'
+                           f'case "$*" in *verify*) [ -f {control.name}/fail-verify ] && exit 1;; esac\nexit 0\n')
+        return Path(control.name)
+
+    def test_session_baseline_never_hides_a_known_failure(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        control = self.controlled_wrapper()
+        record = state_path(self.root) / 'stop-unverified.json'
+        (control / 'fail').touch()
+        source = self.root / 'src/main/java/App.java'
+        source.parent.mkdir(parents=True)
+        source.write_text('class App { broken }')
+        self.assertEqual(self.invoke(session_id='first')['decision'], 'block')
+        self.assertEqual(len(self.calls()), 1)
+        # New conversations on the same failing tree record it as their baseline,
+        # yet Stop still runs and blocks again.
+        for session, source_name in (('second', 'startup'), ('third', 'clear')):
+            with self.subTest(source=source_name):
+                self.assertIsNone(self.start_session(session, source=source_name))
+                output = self.invoke(session_id=session)
+                self.assertEqual(output['decision'], 'block')
+                self.assertIn('exit 1', output['reason'])
+        self.assertEqual(len(self.calls()), 3)
+        # A non-blocking report after a Stop continuation is still a failure.
+        self.assertIn('exit 1', self.invoke(session_id='third', stop_hook_active=True)['systemMessage'])
+        self.assertEqual(len(self.calls()), 4)
+        # A passing compile check does not clear a failed full verification.
+        (control / 'fail').unlink()
+        (control / 'fail-verify').touch()
+        self.assertIsNone(self.invoke(session_id='third', env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'compile'}))
+        self.assertTrue(record.exists())
+        self.assertEqual(self.invoke(session_id='third')['decision'], 'block')
+        self.assertEqual(len(self.calls()), 6)
+        # A passing verification clears the record; unchanged queries then skip again.
+        (control / 'fail-verify').unlink()
+        self.assertIsNone(self.invoke(session_id='third'))
+        self.assertFalse(record.exists())
+        self.assertIsNone(self.start_session('fourth'))
+        self.assertIsNone(self.invoke(session_id='fourth'))
+        self.assertIsNone(self.invoke(session_id='third'))
+        self.assertEqual(len(self.calls()), 7)
+
+    def test_session_baseline_never_hides_a_blocked_build(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        control = self.controlled_wrapper()
+        (control / 'log').touch()
+        self.assertEqual(self.invoke(session_id='first')['decision'], 'block')
+        # The new session starts from the tree the blocked build left behind.
+        (control / 'log').unlink()
+        self.assertIsNone(self.start_session('second'))
+        self.assertIsNone(self.invoke(session_id='second'))
+        self.assertEqual(len(self.calls()), 2)
+        self.assertIsNone(self.invoke(session_id='second'))
+        self.assertEqual(len(self.calls()), 2)
+        # Unusable records never allow a skip; a valid record for another tree does.
+        hooks = load_hook_runtime()
+        record = state_path(self.root) / 'stop-unverified.json'
+        skip = lambda: hooks.unchanged_since_session_start({'session_id': 'second'}, str(self.root))
+        self.assertTrue(skip())
+        for content in ('not json', '[]', '{"fingerprint": "short"}', '{"a": "' + 'x' * 5000 + '"}'):
+            with self.subTest(record=content[:20]):
+                record.write_text(content)
+                self.assertFalse(skip())
+        record.write_text(json.dumps({'fingerprint': 'd' * 64, 'mode': 'verify'}))
+        self.assertTrue(skip())
+        record.unlink()
+        os.mkfifo(record)
+        self.assertFalse(skip())  # O_NONBLOCK: a FIFO neither blocks nor counts as a record
+        record.unlink()
+        record.mkdir()
+        self.assertFalse(skip())
+
+
+    def test_session_baseline_publish_is_atomic_without_replacement(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper()
+        hooks = load_hook_runtime()
+        first, second = 'a' * 64, 'b' * 64
+        path = hooks.baseline_file(str(self.root), 'race')
+        self.assertTrue(hooks.publish_baseline(path, 'race', first))
+        self.assertFalse(hooks.publish_baseline(path, 'race', second))
+        self.assertEqual(json.loads(path.read_text())['fingerprint'], first)
+        # Concurrent SessionStarts both pass the existence check; exactly one publishes.
+        barrier, values, results = threading.Barrier(4), iter('0123'), []
+        publish = hooks.publish_baseline
+        def fingerprint(root):
+            value = next(values) * 64
+            barrier.wait(timeout=10)
+            return value
+        def published(path, session, value):
+            results.append((publish(path, session, value), value))
+            return results[-1][0]
+        with mock.patch.object(hooks, 'session_fingerprint', fingerprint), mock.patch.object(hooks, 'publish_baseline', published), \
+                mock.patch.dict(os.environ, {'CLAUDE_PROJECT_DIR': str(self.root)}):
+            threads = [threading.Thread(target=hooks.record_baseline, args=({'session_id': 'concurrent', 'source': 'startup'},))
+                       for _ in range(4)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join(timeout=10)
+        winners = [value for ok, value in results if ok]
+        self.assertEqual((len(results), len(winners)), (4, 1))
+        stored = json.loads(hooks.baseline_file(str(self.root), 'concurrent').read_text())
+        self.assertEqual(stored, {'session': 'concurrent', 'fingerprint': winners[0]})
+        self.assertEqual([p.name for p in path.parent.iterdir() if p.name.startswith('baseline-')], [])
+
+    def test_session_baseline_invalid_entries(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper()
+        hooks = load_hook_runtime()
+        folder = hooks.baseline_file(str(self.root), 'x').parent
+        cases = {'fifo': lambda p: os.mkfifo(p), 'directory': lambda p: p.mkdir(),
+                 'garbage': lambda p: p.write_text('{not json'), 'oversized': lambda p: p.write_text('{"a": "' + 'x' * 5000 + '"}'),
+                 'other-session': lambda p: p.write_text(json.dumps({'session': 'someone-else', 'fingerprint': 'c' * 64})),
+                 'link': lambda p: p.symlink_to(folder / 'elsewhere.json')}
+        for session, create in cases.items():
+            with self.subTest(entry=session):
+                create(hooks.baseline_file(str(self.root), session))
+                (self.root / 'input.txt').write_text(session)  # defeat reuse
+                # Never replaced and never blocking; a replaced entry would match and skip below.
+                self.assertIsNone(self.start_session(session))
+                before = len(self.calls())
+                self.assertIsNone(self.invoke(session_id=session))
+                self.assertEqual(len(self.calls()), before + 1)
+        # Pruning touches only regular baseline files and stale baseline temporaries.
+        stale, fresh, unrelated = folder / 'baseline-stale', folder / 'baseline-fresh', folder / 'notes.txt'
+        for path in (stale, fresh, unrelated):
+            path.write_text('{}')
+        os.utime(stale, (time.time() - 7200, time.time() - 7200))
+        with mock.patch.object(hooks, 'SESSION_BASELINES', 1), mock.patch.dict(os.environ, {'CLAUDE_PROJECT_DIR': str(self.root)}), \
+                redirect_stdout(io.StringIO()):
+            hooks.record_baseline({'session_id': 'newest', 'source': 'startup'})
+        names = {path.name for path in folder.iterdir()}
+        self.assertNotIn('baseline-stale', names)
+        self.assertTrue({'baseline-fresh', 'notes.txt', hooks.baseline_file(str(self.root), 'newest').name,
+                         hooks.baseline_file(str(self.root), 'fifo').name, hooks.baseline_file(str(self.root), 'directory').name,
+                         hooks.baseline_file(str(self.root), 'link').name} <= names)
+        self.assertEqual(len([n for n in names if hooks.BASELINE_NAME.fullmatch(n) and (folder / n).is_file() and not (folder / n).is_symlink()]), 1)
+
     def test_lint(self):
         if ACTION != 'lint-migration': self.skipTest('other hook')
         directory = self.root/'src/main/resources/db/migration'
@@ -681,14 +851,16 @@ if __name__ == '__main__':
         'guard-secrets': ['test_secret', 'test_secret_only_flags_introduced_literals', 'test_secret_test_configuration_asks',
                           'test_secret_names_files_and_separators', 'test_guard_input_cost_is_linear',
                           'test_test_paths_are_relative_to_the_project', 'test_secret_local_env_files_ask',
-                          'test_secret_urls_tokens_and_compose'],
+                          'test_secret_urls_tokens_and_compose', 'test_secret_quotes_blocks_and_references'],
         'guard-ddl': ['test_ddl', 'test_ddl_documents_keys_and_values', 'test_ddl_test_configuration_and_unrelated_edits',
                       'test_guard_input_cost_is_linear', 'test_test_paths_are_relative_to_the_project'],
         'verify-on-stop': ['test_stop_batches_edits_without_pending_markers', 'test_verify', 'test_verify_maven', 'test_mcp_verification_reused_by_stop', 'test_source_packages_named_build_target_docs', 'test_stop_sigterm_kills_child_session',
                            'test_stop_reports_skipped_discovery', 'test_stop_never_runs_untrusted_ancestor_wrapper', 'test_stop_hangup_and_kill_never_orphan_build',
                            'test_stop_skips_when_unchanged_since_session_start', 'test_session_baseline_is_kept_and_only_recorded_for_new_conversations',
                            'test_session_baselines_are_bounded', 'test_stop_verification_modes', 'test_stop_timeout_reaches_runtime',
-                           'test_stop_names_changed_inputs', 'test_stop_build_writing_inputs_blocks_with_message'],
+                           'test_stop_names_changed_inputs', 'test_stop_build_writing_inputs_blocks_with_message',
+                           'test_session_baseline_never_hides_a_known_failure', 'test_session_baseline_never_hides_a_blocked_build',
+                           'test_session_baseline_publish_is_atomic_without_replacement', 'test_session_baseline_invalid_entries'],
         'lint-migration': ['test_lint', 'test_sql_policy_corpus'],
     }
     result = unittest.TextTestRunner().run(unittest.TestSuite(HookTests(name) for name in ['test_diagnostics', *methods[ACTION]]))
