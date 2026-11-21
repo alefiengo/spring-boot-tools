@@ -223,7 +223,11 @@ Pin third-party CI actions/images by reviewed release or digest in the adopted p
 - Run the dependency/scan jobs **nightly or weekly**, not per push
   (schedule trigger / `rules: - if: $CI_PIPELINE_SOURCE == "schedule"`),
   unless the repo changes dependencies frequently.
-- Parallelize `verify` and `scan` — they are independent. When `scan` moves to a schedule, drop it from the `needs` of the image job (`image` in GitHub Actions, `image-build` in GitLab); otherwise the image job waits on a job that no longer runs on push.
+- Parallelize the verification and scanning jobs: `verify` and `scan` in GitHub Actions; `verify`, `secrets-history` and `dependencies-check` in GitLab. They are independent.
+- When a scanning job moves to a schedule, change the jobs that depend on it first, or the pipeline may not be created at all:
+  - GitHub Actions: the template's `image` job has `needs: [verify, scan]`. A job that is skipped by its `if` also skips every job that needs it, and a job moved to a separate scheduled workflow no longer exists in this one. Remove `scan` from `needs` (keep `verify`).
+  - GitLab: `image-build` has `needs: [verify, secrets-history]`. Both stay mandatory unless you change them. If `secrets-history` gets a `rules:` condition that excludes it from push pipelines, either remove it from `needs` or mark it `optional: true`; a mandatory `needs` entry on a job absent from the pipeline makes GitLab reject the pipeline. `dependencies-check` is not in any `needs`, so it can move freely.
+  - Keep `verify` a mandatory dependency of the image job on both platforms. Moving the secret scan off the push path means a leaked secret is found later, so schedule it often enough for that to be acceptable.
 - For local experiments only, Testcontainers reuse requires `testcontainers.reuse.enable=true` in `~/.testcontainers.properties` and `.withReuse(true)` on the container. Do not enable reuse in CI; benchmark build and container startup separately.
 
 ## References

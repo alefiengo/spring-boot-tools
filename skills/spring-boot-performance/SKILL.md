@@ -91,7 +91,7 @@ spring:
       leak-detection-threshold: 20000
 ```
 
-- `leak-detection-threshold` logs a stack trace when a connection stays checked out longer than the value (HikariCP minimum 2000 ms). Set it above the slowest legitimate transaction (20000 ms here is a placeholder); a value equal to `max-lifetime` would never fire, since the connection is retired first.
+- `leak-detection-threshold` logs a stack trace when a connection stays checked out longer than the value. Set it above the slowest legitimate transaction (20000 ms here is a placeholder). HikariCP's `HikariConfig` validation (source on the `dev` branch, read 2026-11-21) disables it with a warning when it is below 2000 ms or above `max-lifetime`. A value close to `max-lifetime` is allowed but almost useless: `max-lifetime` applies to connections in the pool and a borrowed connection is retired only after it is returned.
 - Size pools from measured query latency/concurrency and the database budget across all replicas, reserving capacity for migrations and administration. The sum of pools must fit the available connection budget.
 - Read query latency and database saturation under the actual workload; API/ETL labels alone do not determine useful pool size.
 
