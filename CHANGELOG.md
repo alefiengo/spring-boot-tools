@@ -4,6 +4,58 @@
 
 Entries marked **Behavior change** alter visible results.
 
+### Hooks
+
+- **Behavior change:** the Stop hook skips verification, silently, when the
+  project fingerprint equals the one recorded when the session started. The new
+  `session-baseline` SessionStart hook (`startup` and `clear` only) stores it
+  under `~/.cache/spring-boot-tools/build-<hash>/sessions/` (at most 64 per
+  project). `resume`, `fork` and `compact` record none, so they always verify.
+  A tree that was already broken at session start is not re-verified until
+  something changes. The plugin now registers five hooks.
+- New options `stop_verification` (`verify` by default, `compile` or `off`) and
+  `stop_timeout_seconds` (300 by default, 30 to 600). `options` in the manifest
+  requires Claude Code 2.1.271 or newer. Claude Code 2.1.330 does not apply a
+  `default` to an option that was never configured, so the hook reads
+  `CLAUDE_PLUGIN_OPTION_*`, treats absence as the default and falls back to the
+  default, with a notice, on an invalid value. `compile` never satisfies the
+  full verification gate. The Stop hook timeout is 660 s.
+- The Stop message names up to 10 inputs that changed during the build and
+  suggests `.gitignore` for build outputs; the hook always emits one JSON
+  object, with notices in `systemMessage`.
+- **Behavior change:** `guard-secrets` asks for confirmation instead of denying
+  for local `.env`, `.env.*` and `*.env` files, so the `.env` recommended by the
+  Docker skill can be written; `.env.example`, `.env.sample` and `.env.template`
+  stay denied, as do `.envrc`, Spring configuration and Compose files.
+- `guard-secrets` also detects credentials in URLs (`scheme://user:pass@host`,
+  including JDBC), AWS, GitHub and Slack tokens, private-key blocks, a YAML
+  value on the line after its key, and Docker Compose files. Known gaps: Java
+  sources, JSON and XML are not inspected, only the first line of a multi-line
+  YAML scalar is checked, URL passwords with an unencoded `/` or `@` and JDBC
+  `;password=` parameters are missed, and comments are checked for tokens only.
+
+### MCP server
+
+- **BREAKING:** Node.js 22 or newer is required (`engines.node` is `>=22`);
+  Node 20 reached end of life on 2026-04-30.
+- **BREAKING:** the static endpoint inventory returns `version: null` when the
+  path has no literal `/v<N>` segment, instead of an invented `"1"`. Callers
+  that read `version` as a string must handle `null`.
+- `analyze_project` returns `warnings` (relative path and parser error) for YAML
+  documents it cannot parse, such as an unquoted `@project.version@`, and keeps
+  the rest of the inventory instead of failing. A route with an unresolved
+  `${...}` placeholder is kept with one warning per file and placeholder. In
+  `compare`, such routes appear in `comparison.unresolved` and possible
+  OpenAPI matches in `comparison.unresolvedRuntime`.
+- `check_migrations` status is documented as Maven-only and returns a specific
+  error for Gradle projects.
+- `run_tests` keeps the runtime's diagnostic and exit code when no suite ran,
+  and documents that a Gradle multi-project filter needs `module`.
+- Local connection refusals and resets (`ECONNREFUSED`, `ECONNRESET`) get the
+  same diagnostic.
+- Update `@modelcontextprotocol/server` to 2.4.0 and `fast-xml-parser` to 5.12.1;
+  `npm audit` reports no vulnerabilities.
+
 ### Shared runtime
 
 - **Behavior change:** `run_tests` with `testClass` on a Maven reactor adds
@@ -40,8 +92,10 @@ Entries marked **Behavior change** alter visible results.
 
 ### Documentation, skills and repository process
 
-- Document the runtime changes above in `docs/architecture.md` and the README
-  tool catalog.
+- Document the runtime, hook and MCP changes above in `docs/architecture.md`,
+  the README tool and hook catalogs, `SECURITY.md` and the Node requirement in
+  the README, `docs/codex.md` and `docs/capability-matrix.md`. Add the
+  `session-baseline` entry to `docs/component-evidence.json`.
 - `SECURITY.md` names 0.4.x as the supported series.
 - Label `docs/audit-2026-10-31.md` as the v0.1.0-baseline audit, with a note
   that its counts are historical.

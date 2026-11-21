@@ -825,6 +825,27 @@
       "assessment": "No automated hook ablation; model overhead and workflow benefit unmeasured."
     },
     {
+      "id": "session-baseline",
+      "kind": "hook",
+      "path": "hooks/scripts/session-baseline.sh",
+      "purpose": "Claude hook guard/verification workflow",
+      "behavioralCases": {
+        "positiveTask": [],
+        "negativeTask": [],
+        "indirect": []
+      },
+      "activationProvenByTaskRelevance": false,
+      "deterministicEvidencePaths": [
+        "tests/verify-on-stop/test-basic.sh",
+        "tests/hook-regressions.py"
+      ],
+      "automatedSelectedMinus": false,
+      "liveComparativeResults": [],
+      "marginalUsefulness": "unmeasured",
+      "tokenCostEvidence": "unavailable",
+      "assessment": "No automated hook ablation; the baseline only lets Stop skip an unchanged tree. Model overhead and workflow benefit unmeasured."
+    },
+    {
       "id": "verify-on-stop",
       "kind": "hook",
       "path": "hooks/scripts/verify-on-stop.sh",

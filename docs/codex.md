@@ -115,7 +115,7 @@ python3 /absolute/path/to/spring-boot-tools/scripts/install-doctor.py --json \
 Quote paths containing spaces. `--workspace` defaults to the current directory;
 it represents the MCP process cwd you intend to launch. `--plugin-root` defaults
 to the doctor's containing checkout, resolved from the script's own location.
-The doctor checks Linux/macOS support, Node >=20.3, Python >=3.11, local MCP
+The doctor checks Linux/macOS support, Node >=22, Python >=3.11, local MCP
 ESM import target resolution and file existence (including the server's `/stdio`
 export), registration structure, launcher and runtime support file paths,
 bundle version agreement, and any inherited `SBT_PLUGIN_ROOT`. Codex's inline
@@ -151,7 +151,7 @@ Dependency checking resolves ESM import targets without importing dependencies;
 it does not prove dependency integrity, installed version compatibility, or
 successful server startup. The resolver uses `--experimental-import-meta-resolve`
 with an explicit parent module URL, as supported by the
-[Node 20.3 API](https://nodejs.org/download/release/v20.3.0/docs/api/esm.html#importmetaresolvespecifier-parent).
+[Node API, available since 20.3](https://nodejs.org/download/release/v20.3.0/docs/api/esm.html#importmetaresolvespecifier-parent).
 The doctor never writes files, installs packages,
 changes configuration, uses the network, runs builds, or launches Claude/Codex,
 MCP servers, Java or language servers. It is a local executable, not an eighth

@@ -4,13 +4,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A plugin for developing and reviewing Spring Boot applications with Claude Code and Codex.
-It provides 16 shared skills and seven MCP tools. Claude Code additionally loads seven specialist agents and four hooks.
+It provides 16 shared skills and seven MCP tools. Claude Code additionally loads seven specialist agents and five hooks.
 Build execution and verification share one runtime so hooks and tools can
 coordinate their work.
 
 ## Requirements
 
-- Node.js 20.3 or newer and npm for the MCP server.
+- Node.js 22 or newer and npm for the MCP server (Node 20 reached end of
+  life on 2026-04-30).
 - Python 3.11 or newer and Bash on Linux, macOS or WSL.
 - A JDK compatible with the application and its Maven or Gradle wrapper.
   A global build-tool installation is used when no wrapper is available.
@@ -126,9 +127,22 @@ not been verified.
 
 ### Configuration
 
-Configure `app_port` through the plugin configuration. It defaults to 8080
-and supplies the default application port for Actuator inspection. Project
-build files determine the build tool and dependency versions.
+Plugin options (set them when the plugin is enabled; `options` needs Claude
+Code 2.1.271 or newer):
+
+| Option | Values | Default | Effect |
+|---|---|---|---|
+| `app_port` | 1-65535 | 8080 | Default application port for Actuator inspection |
+| `stop_verification` | `verify`, `compile`, `off` | `verify` | Build check when Claude stops: Maven `verify` / Gradle `check`, Maven `compile` / Gradle `classes` (never counts as a full verification), or none |
+| `stop_timeout_seconds` | 30-600 | 300 | Time limit for that build (the Stop hook itself allows 660 s) |
+
+Claude Code 2.1.330 does not apply a `default` to an option that was never
+configured: `${user_config.KEY}` fails with "Plugin option ... isn't set", and
+`CLAUDE_PLUGIN_OPTION_<KEY>` is not exported (a hook cannot use
+`${user_config.*}` at all). The Stop hook therefore reads the environment
+variables itself, treats an absent or empty value as the default and, for an
+invalid value, shows a notice and uses the default. Project build files
+determine the build tool and dependency versions.
 
 ## Update to v0.4.0
 
@@ -201,11 +215,11 @@ need no application build or application reviewers.
 | Tool | Responsibility |
 |---|---|
 | `initialize_project` | Generate a project through Spring Initializr into an absent target; refuse existing project contexts, targets and destination paths that contain a symbolic link (the error names the component) |
-| `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings |
+| `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings; unparseable YAML documents are reported in `warnings` instead of failing the inventory |
 | `run_build` | Execute controlled Maven/Gradle tasks with module/profile scope |
 | `run_tests` | Run tests and summarize fresh XML reports and failures; `testClass` filters need `module` in a multi-project Gradle build, and a Maven filter that executes no test returns `ok: false` |
 | `check_migrations` | Inspect migration names, versions, ordering and SQL risks; explicitly request database status (Maven only; Gradle projects get an explanation) |
-| `openapi_endpoints` | Inspect static mappings or runtime OpenAPI and compare them |
+| `openapi_endpoints` | Inspect static mappings or runtime OpenAPI and compare them; static `version` is `null` unless the path has a literal `/v<N>` segment |
 | `actuator_health` | Inspect health, readiness and liveness with access diagnostics |
 
 A test filter that executes nothing is reported, not passed. Maven filters add
@@ -216,7 +230,12 @@ nothing in a task, so in a multi-project build pass `module`. A build that
 exceeds its timeout or is cancelled receives SIGTERM, 750 ms to clean up and
 then SIGKILL.
 
-Static inventories describe available source evidence. Runtime endpoints and
+Static inventories describe available source evidence. A static route that
+contains an unresolved `${...}` placeholder is kept and reported once per file
+and placeholder in `warnings`; in `compare` such routes appear under
+`comparison.unresolved`, and runtime OpenAPI paths that could match by method
+and literal fragments appear under `comparison.unresolvedRuntime`, instead of
+being counted as differences. Runtime endpoints and
 configured database inspection provide additional evidence when requested.
 `actuator_health` and `openapi_endpoints` only contact the local application
 (`localhost`, `127.0.0.0/8` or `::1`); another host is rejected. A 5xx response
@@ -227,16 +246,32 @@ standard blocks (for example 6666 or 10080) cannot be inspected over HTTP.
 
 | Hook | Event | Behavior |
 |---|---|---|
-| `guard-secrets` | Before Write/Edit | Inspect proposed configuration for newly introduced hard-coded credentials; asks for confirmation instead of denying in test paths |
+| `guard-secrets` | Before Write/Edit | Inspect proposed configuration, Compose and `.env` files for newly introduced hard-coded credentials, credentials in URLs, AWS/GitHub/Slack tokens and private-key blocks; denies in application configuration, Compose files and `.env.example`-style templates; asks for confirmation for local `.env`, `.env.*` and `*.env` files and in test paths |
 | `guard-ddl` | Before Write/Edit | Reject newly introduced destructive Hibernate schema settings outside recognized development configuration; `src/test/**`, `*-test.*` and `application-test*` are exempt |
 | `lint-migration` | After Write/Edit | Check migration names and flag destructive SQL |
-| `verify-on-stop` | Stop | Run or reuse an equivalent successful Maven verify / Gradle check; when Claude is already continuing because of a Stop hook it reports the result without blocking again |
+| `session-baseline` | SessionStart (`startup`, `clear`) | Record the project input fingerprint for the new session so Stop can skip verification when nothing changed; silent on any error |
+| `verify-on-stop` | Stop | Per `stop_verification` / `stop_timeout_seconds`, run or reuse an equivalent successful Maven verify / Gradle check, or skip silently when inputs are unchanged since the session started; when Claude is already continuing because of a Stop hook it reports the result without blocking again; a block names the inputs that changed |
 
 The edit guards compare the proposed content with the current file, so an
 unrelated edit is not blocked by a value that was already there; only a
 literal the edit introduces is flagged. Discovery errors other than "no
 project found" (for example an untrusted directory) are reported as a notice
 instead of being skipped silently.
+
+`guard-secrets` is a heuristic over a few file types. It does not inspect Java
+sources (`String password = "..."`), JSON, XML or other file types. Of a
+multi-line YAML scalar only the first line is checked; URLs whose password
+contains an unencoded `/` or `@` and JDBC `;password=...` parameters are not
+detected; only the listed token formats are recognized; and comments are
+checked for tokens only, not for keys or URLs. Values such as `password` or
+`secret` are not treated as placeholders. Keep independent secret scanning.
+
+The Stop hook skips verification when the project fingerprint equals the one
+`session-baseline` recorded when the session started (stored under
+`~/.cache/spring-boot-tools/build-<hash>/sessions/`, at most 64 per project).
+`resume`, `fork` and `compact` record no baseline, so those sessions always
+verify. This skips even a tree that was already broken when the session began.
+A baseline that cannot be recorded or read means Stop verifies as before.
 
 Verification reuse requires matching project inputs, task, module and
 profiles. Failed/cancelled builds and compile/test-only results cannot satisfy
