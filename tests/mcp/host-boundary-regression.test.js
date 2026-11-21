@@ -178,8 +178,9 @@ test('HTTP inspection targets only the local application and reports fetch cause
   await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve));
   const closedPort = closed.address().port;
   await new Promise(resolve => closed.close(resolve));
-  const refused = value(await client.call('actuator_health', { baseUrl: `http://127.0.0.1:${closedPort}` })).results[0].error;
-  assert.match(refused, /ECONNREFUSED/);
+  const failure = value(await client.call('actuator_health', { baseUrl: `http://127.0.0.1:${closedPort}` })).results[0];
+  assert.match(failure.error, /fetch failed: ECONN(?:REFUSED|RESET)/);
+  assert.match(failure.diagnosis, /check that the application is running/i);
 });
 
 test('server errors disclose only health documents', async t => {

@@ -160,6 +160,7 @@ async function analyzeProject() {
   const { root } = project;
   const projectModules = [{ root, buildFile: project.buildFile }, ...(project.modules || [])];
   const dependencies = [], versions = [], persistence = [], configurations = [], layers = [], ports = [];
+  const warnings = [];
   for (const { root: moduleRoot, buildFile } of projectModules) {
     if (buildFile) {
       const file = path.join(moduleRoot, buildFile), source = await fs.readFile(file, "utf-8");
@@ -188,18 +189,23 @@ async function analyzeProject() {
     }
     for (const file of await walk(path.join(moduleRoot, "src/main/resources"), moduleRoot)) {
       if (!/application(?:-[^.]+)?\.(?:ya?ml|properties)$/.test(path.basename(file))) continue;
+      const relative = path.relative(root, file);
       const content = await fs.readFile(file, "utf-8"), declaredPorts = [];
       if (/\.properties$/.test(file)) for (const m of content.matchAll(/^[^\S\n]*server\.port[^\S\n]*[=:][^\S\n]*(\d+)[^\S\n]*$/gm)) declaredPorts.push(Number(m[1]));
-      else for (const doc of parseAllDocuments(content)) {
-        if (doc.errors.length) throw new Error(`Invalid YAML in ${file}: ${doc.errors[0].message}`);
-        const config = doc.toJS(), port = config?.server?.port ?? config?.["server.port"];
-        if (/^\d+$/.test(String(port))) declaredPorts.push(Number(port));
+      else for (const doc of parseAllDocuments(content, { prettyErrors: false })) {
+        try {
+          if (doc.errors.length) throw doc.errors[0];
+          const config = doc.toJS(), port = config?.server?.port ?? config?.["server.port"];
+          if (/^\d+$/.test(String(port))) declaredPorts.push(Number(port));
+        } catch (error) {
+          warnings.push(`${relative}: ${error.message}`);
+        }
       }
-      configurations.push({ file: path.relative(root, file), ports: declaredPorts }); ports.push(...declaredPorts);
+      configurations.push({ file: relative, ports: declaredPorts }); ports.push(...declaredPorts);
     }
   }
   const artifacts = dependencies.map(d => d.artifact || "");
-  return textResult({ ...project, dependencies, versions, persistence, configurations, layers: [...new Set(layers)].filter(Boolean), ports: [...new Set(ports)], capabilities: { build: true, tests: true, actuator: artifacts.some(a => a.includes("actuator")) ? "declared" : "unknown", openapi: artifacts.some(a => a.includes("springdoc")) ? "declared" : "unknown", persistence: persistence.length > 0 || artifacts.some(a => /jpa|jdbc/.test(a)) ? "declared" : "unknown", flyway: artifacts.some(a => a.includes("flyway")) ? "declared" : "unknown" }, limitations: ["Dependencies and versions are declared values; parent inheritance, catalogs, expressions and transitive dependencies require build-tool resolution.", "Entity annotations and configuration files are inventories, not effective runtime metadata. Configuration values other than ports are not returned."] });
+  return textResult({ ...project, dependencies, versions, persistence, configurations, layers: [...new Set(layers)].filter(Boolean), ports: [...new Set(ports)], warnings, capabilities: { build: true, tests: true, actuator: artifacts.some(a => a.includes("actuator")) ? "declared" : "unknown", openapi: artifacts.some(a => a.includes("springdoc")) ? "declared" : "unknown", persistence: persistence.length > 0 || artifacts.some(a => /jpa|jdbc/.test(a)) ? "declared" : "unknown", flyway: artifacts.some(a => a.includes("flyway")) ? "declared" : "unknown" }, limitations: ["Dependencies and versions are declared values; parent inheritance, catalogs, expressions and transitive dependencies require build-tool resolution.", "Entity annotations and configuration files are inventories, not effective runtime metadata. Configuration values other than ports are not returned."] });
 }
 async function runBuild(args, ctx) {
   const project = await requireProject();
@@ -211,6 +217,7 @@ async function runBuild(args, ctx) {
 async function checkMigrations(args, ctx) {
   const project = await requireProject(), { root } = project;
   if (args?.mode === "status") {
+    if (project.buildTool === "gradle") throw new Error("Migration status is Maven-only and requires the Flyway Maven plugin.");
     const execution = await build(project, { task: "migration-status", module: args.module, profiles: args.profiles || [] }, ctx);
     return textResult({ mode: "status", databaseAccess: true, limitation: "Build-tool Flyway status queries the configured database; plugin and credentials must already be configured.", ...execution }, execution.exitCode !== 0 || !execution.ok);
   }
@@ -260,38 +267,80 @@ async function runTests(args, ctx) {
         for (const suite of asArray(parsed.testsuite ?? parsed.testsuites?.testsuite)) visit(suite);
       } catch (e) { reportErrors.push(`${path.relative(project.root, file)}: ${e.message}`); }
     }
-    return textResult({ ...r, suites, failures, staleReportsIgnored, reportErrors, ...(suites.length ? {} : { diagnostic: "No fresh test reports generated by this invocation." }) }, r.exitCode !== 0 || r.ok === false || r.inputsChanged === true || reportErrors.length > 0 || suites.some(s => s.failures || s.errors));
+    if (!suites.length && r.diagnostic == null) r.diagnostic = "No fresh test reports generated by this invocation.";
+    return textResult({ ...r, suites, failures, staleReportsIgnored, reportErrors }, r.exitCode !== 0 || r.ok === false || r.inputsChanged === true || reportErrors.length > 0 || suites.some(s => s.failures || s.errors));
   } finally { activeBuilds.delete(project.root); }
 }
 
 // ── tool: openapi_endpoints ─────────────────────────────────────────
 function mappingPaths(args = "") {
-  const named = args.match(/\b(?:value|path)\s*=\s*(\{[^}]*\}|"[^"]*")/);
+  const named = args.match(/\b(?:value|path)\s*=\s*(\{(?:[^"}]|"[^"]*")*\}|"[^"]*")/);
   const value = named?.[1] ?? (/^\s*(?:"|\{)/.test(args) ? args.split(/,\s*\w+\s*=/)[0] : "");
   return [...value.matchAll(/"([^"]*)"/g)].map(m => m[1]);
 }
-async function staticEndpoints() {
+function routeTemplate(routePath) {
+  const literals = [], placeholders = [];
+  let start = 0;
+  for (let opening = routePath.indexOf("${"); opening !== -1; opening = routePath.indexOf("${", start)) {
+    let end = opening + 2, depth = 1;
+    for (; end < routePath.length && depth; end++) {
+      if (routePath[end] === "{") depth++;
+      if (routePath[end] === "}") depth--;
+    }
+    if (depth) break;
+    literals.push(routePath.slice(start, opening));
+    placeholders.push(routePath.slice(opening, end));
+    start = end;
+  }
+  literals.push(routePath.slice(start));
+  return { literals, placeholders };
+}
+async function staticEndpoints(unresolved) {
   const { root } = await requireProject();
   const endpoints = [], warnings = [];
   for (const file of (await walk(root)).filter(f => /(?:^|[/\\])src[/\\]main[/\\]java[/\\]/.test(f) && f.endsWith(".java"))) {
     const source = stripComments(await fs.readFile(file, "utf-8"));
     if (!/@(?:RestController|Controller)\b/.test(source)) continue;
+    const relative = path.relative(root, file);
     const classIndex = source.search(/\bclass\s+\w+/);
     const prefix = source.slice(0, classIndex);
     const base = [...prefix.matchAll(/@RequestMapping\b(?:\s*\(([^)]*)\))?/g)].at(-1);
     const bases = mappingPaths(base?.[1]);
+    const filePlaceholders = new Set();
     for (const match of source.slice(classIndex).matchAll(/@(Get|Post|Put|Patch|Delete|Request)Mapping\b(?:\s*\(([^)]*)\))?/g)) {
       const methods = match[1] === "Request" ? [...(match[2] || "").matchAll(/RequestMethod\.(\w+)/g)].map(m => m[1]) : [match[1].toUpperCase()];
       const paths = mappingPaths(match[2]);
       if (!methods.length) methods.push("ANY");
-      if (/\b(?:path|value)\s*=\s*[A-Za-z_]/.test(match[2] || "")) warnings.push(`${path.relative(root, file)}: computed path cannot be resolved statically.`);
+      if (/\b(?:path|value)\s*=\s*[A-Za-z_]/.test(match[2] || "")) warnings.push(`${relative}: computed path cannot be resolved statically.`);
       for (const method of methods) for (const basePath of bases.length ? bases : [""]) for (const route of paths.length ? paths : [""]) {
         const routePath = `/${[basePath, route].map(p => p.replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/")}`;
-        endpoints.push({ file: path.relative(root, file), method, path: routePath, version: routePath.match(/\/v(\d+)(?:\/|$)/)?.[1] || "1" });
+        const { literals, placeholders } = routeTemplate(routePath);
+        // Keep a placeholder from making adjacent literal text look like a version segment.
+        const version = literals.join("\0").match(/\/v(\d+)(?:\/|$)/)?.[1] ?? null;
+        const endpoint = { file: relative, method, path: routePath, version };
+        for (const placeholder of placeholders) filePlaceholders.add(placeholder);
+        if (placeholders.length) unresolved.set(endpoint, literals);
+        endpoints.push(endpoint);
       }
     }
+    for (const placeholder of filePlaceholders) warnings.push(`${relative}: placeholder ${placeholder} cannot be resolved statically`);
   }
   return { count: endpoints.length, endpoints, warnings, limitation: "Static annotation inventory; computed constants, Kotlin mappings and composed annotations require runtime OpenAPI inspection." };
+}
+
+function couldMatchRoute(literals, routePath) {
+  const prefix = literals[0], suffix = `${literals.at(-1)}/`, candidate = `${routePath}/`;
+  if (!candidate.startsWith(prefix) || !candidate.endsWith(suffix)) return false;
+  let offset = prefix.length;
+  // A whole path segment placeholder can resolve to an empty path. Allow the
+  // slashes on either side to coincide, including at the end of the route.
+  const start = literal => candidate[offset - 1] === "/" && literal.startsWith("/") ? offset - 1 : offset;
+  for (const literal of literals.slice(1, -1)) {
+    const found = candidate.indexOf(literal, start(literal));
+    if (found === -1) return false;
+    offset = found + literal.length;
+  }
+  return start(suffix) <= candidate.length - suffix.length;
 }
 
 function appUrl(baseUrl, endpoint) {
@@ -328,6 +377,7 @@ async function fetchDocument(url, ctx) {
     const error = cause && cause !== e.message ? `${e.message}: ${cause}` : e.message;
     const diagnosis = cause === "bad port" ? "The fetch standard blocks this port; HTTP inspection requires the application to listen on another port."
       : cause === "unexpected redirect" ? "The endpoint redirected and redirects are not followed; use the application's direct local URL as baseUrl."
+      : ["ECONNREFUSED", "ECONNRESET"].includes(cause) ? "The local connection was refused or reset. Check that the application is running and listening on the configured port."
       : "Connection, TLS, cancellation or response limit failure; confirm the application and management port are reachable.";
     return { ok: false, error, diagnosis };
   }
@@ -358,7 +408,8 @@ async function actuatorHealth(args, ctx) {
 }
 async function openapiEndpoints(args, ctx) {
   const mode = args?.mode || "static";
-  const inventory = mode === "runtime" ? undefined : await staticEndpoints();
+  const unresolved = new Map();
+  const inventory = mode === "runtime" ? undefined : await staticEndpoints(unresolved);
   if (mode === "static") return textResult({ mode, ...inventory });
   const response = await fetchDocument(appUrl(args?.baseUrl, args?.documentPath || "/v3/api-docs"), ctx);
   if (!response.ok) return textResult({ mode, runtime: { ...response, text: undefined }, ...(inventory ? { static: inventory } : {}) }, true);
@@ -380,8 +431,23 @@ async function openapiEndpoints(args, ctx) {
   const runtimeInventory = { source: "runtime-openapi", version: document.openapi, status: response.status, endpoints, count: endpoints.length, warnings };
   const result = { mode, runtime: runtimeInventory, ...(inventory ? { static: inventory } : {}) };
   if (inventory) {
-    const match = (a, b) => a.path === b.path && (a.method === b.method || a.method === "ANY" || b.method === "ANY");
-    result.comparison = { onlyStatic: inventory.endpoints.filter(e => !endpoints.some(r => match(e, r))), onlyRuntime: endpoints.filter(e => !inventory.endpoints.some(r => match(e, r))), limitation: "Differences can reflect conditional controllers, context paths, grouped docs, composed annotations or static-parser limits; they are findings to investigate, not proven API defects." };
+    const sameMethod = (a, b) => a.method === b.method || a.method === "ANY" || b.method === "ANY";
+    const match = (a, b) => a.path === b.path && sameMethod(a, b);
+    const literalEndpoints = inventory.endpoints.filter(endpoint => !unresolved.has(endpoint));
+    const onlyRuntime = [], unresolvedRuntime = [];
+    const templates = [...unresolved];
+    for (const endpoint of endpoints) {
+      if (literalEndpoints.some(e => match(e, endpoint))) continue;
+      if (templates.some(([e, literals]) => sameMethod(e, endpoint) && couldMatchRoute(literals, endpoint.path))) unresolvedRuntime.push(endpoint);
+      else onlyRuntime.push(endpoint);
+    }
+    result.comparison = {
+      onlyStatic: literalEndpoints.filter(e => !endpoints.some(r => match(e, r))),
+      onlyRuntime,
+      unresolved: [...unresolved.keys()],
+      unresolvedRuntime,
+      limitation: "Differences can reflect conditional controllers, context paths, grouped docs, composed annotations or static-parser limits. Unresolved runtime routes could match a static placeholder mapping.",
+    };
   }
   return textResult(result);
 }
@@ -406,8 +472,8 @@ export function createServer() {
   }), async (args, ctx) => textResult(await runtime({ ...args, action: "initialize" }, ctx, 45_000)));
   register("analyze_project", "Discovers modules, declared dependency/version provenance, persistence annotations, configuration file inventory and capabilities using the shared project runtime.", undefined, analyzeProject);
   register("run_build", "Runs controlled Maven/Gradle tasks through the shared build coordinator; wrappers, module/profile validation, process locking and bounded output are shared with hooks.", z.object({ task: z.enum(["compile", "test-compile", "package", "verify", "check", "clean", "dependencies"]).default("compile"), force: z.boolean().default(false).describe("Force a fresh verification even when unchanged inputs were already verified."), ...selection }), runBuild);
-  register("run_tests", "Runs Maven/Gradle tests with fresh structured XML reports, preserving diagnostics and rejecting stale reports; shared coordinator prevents racing builds.", z.object({ testClass: z.string().optional().describe("Qualified class name, optionally #method; validated by the shared build runtime."), ...selection }), runTests);
-  register("check_migrations", "Lints migration names, normalized duplicate versions and risk warnings by module/location. Explicit status mode queries the configured database through Flyway.", z.object({ mode: z.enum(["lint", "status"]).default("lint"), ...selection }), checkMigrations);
+  register("run_tests", "Runs Maven/Gradle tests with fresh structured XML reports, preserving diagnostics and rejecting stale reports; shared coordinator prevents racing builds.", z.object({ testClass: z.string().optional().describe("Qualified class name, optionally #method. The shared build runtime validates this filter. Gradle multi-project builds require a module when this filter is set."), ...selection }), runTests);
+  register("check_migrations", "Lints migration names, normalized duplicate versions and risk warnings by module/location. Explicit status mode is Maven-only and queries the configured database through the Flyway Maven plugin.", z.object({ mode: z.enum(["lint", "status"]).default("lint"), ...selection }), checkMigrations);
   register("openapi_endpoints", "Inventories static controllers; optionally fetches the local application's runtime OpenAPI paths and compares routes. Static approximations and runtime schemas are reported separately.", z.object({ mode: z.enum(["static", "runtime", "compare"]).default("static"), baseUrl: localBaseUrl, documentPath: z.enum(["/v3/api-docs", "/v3/api-docs.yaml"]).default("/v3/api-docs") }), openapiEndpoints);
   register("actuator_health", "Queries only explicitly selected health/readiness/liveness endpoints of the local application; diagnoses HTTP authentication, exposure and connection failures without collecting other Actuator endpoints.", z.object({ baseUrl: localBaseUrl, probes: z.array(z.enum(["health", "readiness", "liveness"])).min(1).max(3).default(["health"]) }), actuatorHealth);
   return server;
