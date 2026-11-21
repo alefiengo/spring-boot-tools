@@ -135,6 +135,7 @@ Entries marked **Behavior change** alter visible results.
 
 ### Documentation, skills and repository process
 
+- Add the plugin icon (`.claude-plugin/icon.png`, 1024 × 1024 PNG).
 - Document the runtime, hook and MCP changes above in `docs/architecture.md`,
   the README tool and hook catalogs, `SECURITY.md` and the Node requirement in
   the README, `docs/codex.md` and `docs/capability-matrix.md`. Add the
