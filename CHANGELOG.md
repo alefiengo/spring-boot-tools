@@ -10,9 +10,17 @@ Entries marked **Behavior change** alter visible results.
   project fingerprint equals the one recorded when the session started. The new
   `session-baseline` SessionStart hook (`startup` and `clear` only) stores it
   under `~/.cache/spring-boot-tools/build-<hash>/sessions/` (or the per-uid
-  temporary fallback directory; at most 64 per project). `resume`, `fork` and `compact` record none, so they always verify.
-  A tree that was already broken at session start is not re-verified until
-  something changes. The plugin now registers five hooks.
+  temporary fallback directory; at most 64 per project). `resume`, `fork` and
+  `compact` do not record a new baseline. A resumed or compacted session keeps
+  the baseline recorded when it started, so it can still skip when nothing
+  changed; a forked session has a new ID and no baseline, so it always verifies.
+  Stop never skips when the current fingerprint equals the one recorded for the
+  project's last Stop check that failed, timed out or blocked because inputs
+  changed. That record (`stop-unverified.json` in the project's private state
+  directory) is cleared by a passing `verify`; a passing `compile` clears only a
+  `compile` failure. An unreadable record never allows a skip. It can still skip
+  a tree that changed outside Claude Code after the last Stop check and was
+  never verified. The plugin now registers five hooks.
 - New options `stop_verification` (`verify` by default, `compile` or `off`) and
   `stop_timeout_seconds` (300 by default, 30 to 600). `options` in the manifest
   requires Claude Code 2.1.271 or newer. For hooks, Claude Code 2.1.330 does not
@@ -23,18 +31,26 @@ Entries marked **Behavior change** alter visible results.
   `${user_config.app_port}` still receives the default 8080. `compile` never satisfies the
   full verification gate. The Stop hook timeout is 660 s.
 - The Stop message names up to 10 inputs that changed during the build and
-  suggests `.gitignore` for build outputs; the hook always emits one JSON
-  object, with notices in `systemMessage`.
+  suggests `.gitignore` for build outputs. The hook emits at most one JSON
+  object (none when there is nothing to report), with notices in
+  `systemMessage`.
 - **Behavior change:** `guard-secrets` asks for confirmation instead of denying
   for local `.env`, `.env.*` and `*.env` files, so the `.env` recommended by the
   Docker skill can be written; `.env.example`, `.env.sample` and `.env.template`
-  stay denied, as do `.envrc`, Spring configuration and Compose files.
+  stay denied, as do `.envrc`, Spring configuration and Compose files. Under
+  test paths (`src/test/**`, `*-test.*`, `application-test*`) Spring
+  configuration, Compose files and `.env` templates ask instead of deny.
 - `guard-secrets` also detects credentials in URLs (`scheme://user:pass@host`,
   including JDBC), AWS, GitHub and Slack tokens, private-key blocks, a YAML
   value on the line after its key, and Docker Compose files. Known gaps: Java
   sources, JSON and XML are not inspected, only the first line of a multi-line
   YAML scalar is checked, URL passwords with an unencoded `/` or `@` and JDBC
   `;password=` parameters are missed, and comments are checked for tokens only.
+  In `.env` files a single-quoted value is literal, so `'${VAR}'` is flagged
+  (a credential inside a URL in such a value still treats `${VAR}` as a
+  placeholder); a block scalar indicator (`|` or `>`) after a credential key is
+  flagged as on the same line; `classpath:` and `file:` references under
+  `private-key`, `signing-key` or `credentials` are exempt on either line.
 
 ### MCP server
 
@@ -43,7 +59,8 @@ Entries marked **Behavior change** alter visible results.
 - **BREAKING:** the static endpoint inventory returns `version: null` when the
   path has no literal `/v<N>` segment, instead of an invented `"1"`. Callers
   that read `version` as a string must handle `null`.
-- `analyze_project` returns `warnings` (relative path and parser error) for YAML
+- `analyze_project` returns `warnings` (relative path, line and column, and a
+  fixed error category, never configuration text) for YAML
   documents it cannot parse, such as an unquoted `@project.version@`, and keeps
   the rest of the inventory instead of failing. A route with an unresolved
   `${...}` placeholder is kept with one warning per file and placeholder. In
@@ -70,22 +87,33 @@ Entries marked **Behavior change** alter visible results.
   without `module` is rejected during planning with an explanation, because
   Gradle fails a test task that matches nothing. Pass `module`.
 - **Behavior change:** the verification fingerprint no longer includes host and
-  session identity (`CLAUDE_*`, `CODEX_*`, `HERDR_*` variables and terminal,
-  multiplexer, SSH and VS Code IPC handles), so a Stop hook and an MCP call
+  session identity (`CLAUDE_*`, `CODEX_*`, `HERDR_*` variables, `CLAUDECODE`,
+  `AI_AGENT`, `GIT_EDITOR`, `COREPACK_ENABLE_AUTO_PIN`, `WSL_INTEROP`,
+  `WARP_TERMINAL_SESSION_UUID`, and terminal, multiplexer, SSH and VS Code IPC
+  handles), so a Stop hook and an MCP call
   can reuse one verification. Other variables, including JVM options, locale,
   time zone, proxies and CI variables, still count, and an explicit
   `${VAR}` reference in a project file reintroduces its value.
 - **Behavior change:** untracked files that Git ignores no longer count as
   inputs, so a build that writes to a git-ignored path (for example
-  `logs/app.log`) no longer invalidates its own verification. If Git is
-  unavailable, errors or exceeds its bounds (2 s, 8 MiB, 50 000 entries) the
-  runtime keeps the conservative behavior.
+  `logs/app.log`) no longer invalidates its own verification. This applies only
+  when Git tracks the project's build descriptors and wrappers; sources under
+  `src/`, build configuration (`pom.xml`, `build.gradle*`, `settings.gradle*`,
+  `gradle.properties`, `.mvn/**`, `gradle/**`) and wrappers always stay inputs
+  even if ignored, while other ignored files (such as a local `.env` outside
+  `src/`) do not invalidate reuse. If Git is unavailable, errors, does not track
+  those files or exceeds its bounds (2 s, 8 MiB, 50 000 entries) the runtime
+  keeps the conservative behavior.
 - Report `changedInputs` (up to 20 sorted relative paths, including additions,
-  deletions and mode changes) and `changedInputsTruncated` when a fingerprint
-  differs from the recorded one.
-- **Behavior change:** timeouts and cancellation send SIGTERM, wait 750 ms and
-  then send SIGKILL to the build tree, so wrappers can finish their cleanup
-  handlers; the Stop hook fingerprints after the group has ended.
+  deletions and mode changes) and `changedInputsTruncated` when `inputsChanged`
+  is true. They list the paths whose fingerprint entry differs between the start
+  and the end of the same run; they do not compare current inputs with the last
+  verification, and both are absent when `inputsChanged` is false.
+- **Behavior change:** timeouts and cancellation send SIGTERM, wait up to 750 ms
+  (ending early when the build tree exits) and then send SIGKILL to the build
+  tree, so wrappers can finish their cleanup handlers; the Stop hook fingerprints
+  after the group has ended. Stopping the MCP server waits up to 1 s for its
+  builds before it kills them.
 - `check_migrations` status on a Gradle project explains that database status
   is Maven-only (`flyway:info`) and how to run the configured task manually.
 - `initialize_project` names the symbolic-link component that blocks a

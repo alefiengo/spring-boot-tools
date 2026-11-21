@@ -143,9 +143,9 @@ option was never configured; the server also falls back to 8080 if the variable
 is absent or empty. Hooks do not get that treatment: for a hook, an option that
 was never configured has no default, `${user_config.KEY}` fails with "Plugin
 option ... isn't set" and `CLAUDE_PLUGIN_OPTION_<KEY>` is not exported.
-`${user_config.*}` is also rejected in shell-form hook commands, the form this
-plugin uses (the Claude Code documentation allows it in exec-form `args`; this
-plugin does not exercise that). The Stop hook therefore reads the environment
+Shell-form hook commands, which this plugin uses, reject `${user_config.*}`;
+Claude Code substitutes it only in exec-form hook `args`, MCP/LSP configuration
+and skill/agent content. The Stop hook therefore reads the environment
 variables itself, treats an absent or empty value as the default and, for an
 invalid value, shows a notice and uses the default. Project build files
 determine the build tool and dependency versions.
@@ -221,7 +221,7 @@ need no application build or application reviewers.
 | Tool | Responsibility |
 |---|---|
 | `initialize_project` | Generate a project through Spring Initializr into an absent target; refuse existing project contexts, targets and destination paths that contain a symbolic link (the error names the component) |
-| `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings; unparseable YAML documents are reported in `warnings` instead of failing the inventory |
+| `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings; unparseable YAML documents are reported in `warnings` (path, position and a fixed error category, never configuration text) instead of failing the inventory |
 | `run_build` | Execute controlled Maven/Gradle tasks with module/profile scope |
 | `run_tests` | Run tests and summarize fresh XML reports and failures; `testClass` filters need `module` in a multi-project Gradle build, and a Maven filter that executes no test returns `ok: false` |
 | `check_migrations` | Inspect migration names, versions, ordering and SQL risks; explicitly request database status (Maven only; Gradle projects get an explanation) |
@@ -233,8 +233,9 @@ A test filter that executes nothing is reported, not passed. Maven filters add
 fail the run, then the runtime checks fresh reports and returns `ok: false`
 with the real exit code when no test ran. Gradle rejects a filter that matches
 nothing in a task, so in a multi-project build pass `module`. A build that
-exceeds its timeout or is cancelled receives SIGTERM, 750 ms to clean up and
-then SIGKILL.
+exceeds its timeout or is cancelled receives SIGTERM and up to 750 ms to clean up
+(the wait ends early when the build tree has exited), then SIGKILL; stopping the
+MCP server waits up to 1 s for its builds before it kills them.
 
 Static inventories describe available source evidence. A static route that
 contains an unresolved `${...}` placeholder is kept and reported once per file
@@ -270,25 +271,47 @@ multi-line YAML scalar only the first line is checked; URLs whose password
 contains an unencoded `/` or `@` and JDBC `;password=...` parameters are not
 detected; only the listed token formats are recognized; and comments are
 checked for tokens only, not for keys or URLs. Values such as `password` or
-`secret` are not treated as placeholders. Keep independent secret scanning.
+`secret` are not treated as placeholders. In `.env` files a single-quoted value
+is literal, so `'${VAR}'` is flagged like any literal; a block scalar indicator
+(`|` or `>`) on the line after a credential key is flagged as on the same line;
+`classpath:` and `file:` references under `private-key`, `signing-key` or
+`credentials` are exempt on either line. A credential inside a URL in a
+single-quoted dotenv value still treats `${VAR}` as a placeholder. Under test
+paths (`src/test/**`, `*-test.*`, `application-test*`) Spring configuration,
+Compose files and `.env` templates ask instead of deny. Keep independent secret
+scanning.
 
 The Stop hook skips verification when the project fingerprint equals the one
 `session-baseline` recorded when the session started (stored under
 `~/.cache/spring-boot-tools/build-<hash>/sessions/`, or the per-uid private
 `spring-boot-tools-<uid>` directory in the temporary directory when the runtime
 falls back to it; at most 64 per project).
-`resume`, `fork` and `compact` record no baseline, so those sessions always
-verify. This skips even a tree that was already broken when the session began.
+`resume`, `fork` and `compact` do not record a new baseline. A resumed or
+compacted session keeps the baseline recorded when it started, so it can still
+skip when nothing changed; a forked session has a new ID and no baseline, so it
+always verifies.
+Stop never skips when the current fingerprint equals the one recorded for the
+project's last Stop check that failed, timed out or blocked because inputs
+changed. That record (`stop-unverified.json` in the project's private state
+directory) is cleared by a passing `verify`; a passing `compile` clears only a
+`compile` failure. An unreadable record never allows a skip.
+It can still skip a tree that changed outside Claude Code after the last Stop check and was never verified.
 A baseline that cannot be recorded or read means Stop verifies as before.
 
 Verification reuse requires matching project inputs, task, module and
 profiles. Failed/cancelled builds and compile/test-only results cannot satisfy
 a full verification gate. Explicit reruns can force execution. The input
 fingerprint ignores host and session identity (`CLAUDE_*`, `CODEX_*` and
-`HERDR_*` variables, terminal, multiplexer, SSH and VS Code IPC handles) and
-untracked files that Git ignores, so a hook and an MCP call from different
-sessions can share a result; when Git cannot report ignored files the runtime
-falls back to counting them. When inputs differ the result lists up to 20
+`HERDR_*` variables; `CLAUDECODE`, `AI_AGENT`, `GIT_EDITOR`,
+`COREPACK_ENABLE_AUTO_PIN`, `WSL_INTEROP`, `WARP_TERMINAL_SESSION_UUID`;
+terminal, multiplexer, SSH and VS Code IPC handles) and, only when Git tracks the
+project's build descriptors and wrappers, untracked files that Git ignores, so a
+hook and an MCP call from different sessions can share a result. Sources under
+`src/`, build configuration (`pom.xml`, `build.gradle*`, `settings.gradle*`,
+`gradle.properties`, `.mvn/**`, `gradle/**`) and wrappers stay inputs even when
+ignored; other ignored files, such as a local `.env` outside `src/`, do not
+invalidate reuse. When Git cannot report ignored files, or does not track those
+files, the runtime falls back to counting them. When inputs differ the result lists up to 20
 `changedInputs` (with `changedInputsTruncated`). The shared
 runtime serializes plugin builds for a project and captures test reports
 inside that lock.
