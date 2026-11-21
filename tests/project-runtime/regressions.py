@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / 'runtime/project_runtime.py'
 sys.path.insert(0, str(RUNTIME.parent))
@@ -301,6 +301,7 @@ echo '<testsuites><testsuite tests="2" skipped="1"/></testsuites>' > target/sure
 
     def test_git_ignored_build_outputs_and_tracked_inputs(self):
         subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        subprocess.run(['git', 'add', '--', 'pom.xml', 'mvnw'], cwd=self.root, check=True)
         (self.root / '.gitignore').write_text('logs/\n')
         self.wrapper.write_text('#!/bin/sh\nmkdir -p logs\necho run >> logs/app.log\n')
         first = self.invoke()
@@ -313,6 +314,48 @@ echo '<testsuites><testsuite tests="2" skipped="1"/></testsuites>' > target/sure
         self.assertTrue(result['inputsChanged'])
         self.assertEqual(result['changedInputs'], ['logs/app.log'])
         self.assertFalse(result['changedInputsTruncated'])
+
+    def test_enclosing_git_whitelist_cannot_hide_project(self):
+        outer = self.root / 'outer'
+        project = outer / 'app'
+        (project / 'src').mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, state_path(project), ignore_errors=True)
+        subprocess.run(['git', 'init', '-q'], cwd=outer, check=True)
+        (outer / '.gitignore').write_text('*\n!*/\n!.gitignore\n')
+        (project / 'pom.xml').write_text('<project/>')
+        wrapper = project / 'mvnw'
+        wrapper.write_text('#!/bin/sh\nmkdir -p target\necho run >> target/calls\ngrep -q "<project/>" pom.xml\n')
+        wrapper.chmod(0o755)
+        self.assertTrue(self.invoke(projectRoot=str(project))['ok'])
+        self.assertTrue(self.invoke(projectRoot=str(project))['reused'])
+        (project / 'src/Changed.java').write_text('class Changed {}')
+        with self.subTest(edit='source'):
+            self.assertFalse(self.invoke(projectRoot=str(project))['reused'])
+        (project / 'custom-input.txt').write_text('changed')
+        with self.subTest(edit='arbitrary input'):
+            self.assertFalse(self.invoke(projectRoot=str(project))['reused'])
+        (project / 'pom.xml').write_text('<broken')
+        result = self.invoke(projectRoot=str(project))
+        self.assertFalse(result['reused'])
+        self.assertFalse(result['ok'])
+
+    def test_ignored_sources_and_build_configuration_remain_inputs(self):
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        subprocess.run(['git', 'add', '--', 'pom.xml', 'mvnw'], cwd=self.root, check=True)
+        (self.root / '.gitignore').write_text('src/\ngradle.properties\nlocal/\n.mvn/\ngradle/\n')
+        inputs = ('src/main/resources/application-local.yml', 'gradle.properties',
+                  'local/nested/src/test/resources/settings.yml', 'local/nested/build.gradle.kts',
+                  '.mvn/wrapper/maven-wrapper.jar', 'gradle/wrapper/gradle-wrapper.properties')
+        for name in inputs:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('first')
+        self.assertTrue(self.invoke()['ok'])
+        self.assertTrue(self.invoke()['reused'])
+        for name in inputs:
+            with self.subTest(name=name):
+                (self.root / name).write_text('changed')
+                self.assertFalse(self.invoke()['reused'])
 
     def test_unignored_build_outputs_report_paths(self):
         subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
@@ -382,6 +425,32 @@ echo '<testsuites><testsuite tests="2" skipped="1"/></testsuites>' > target/sure
                 self.assertEqual(marker.read_text().strip(), 'done')
                 self.assertEqual(result['exitCode'], 0)
                 marker.unlink()
+
+    def test_shared_group_escalates_only_current_members(self):
+        group = os.getpid()
+        process = Mock(pid=100, returncode=None)
+        process.poll.return_value = 0
+        initial = [(100, group, group), (101, 100, group), (102, 100, group)]
+        # Only 102 remains in the group. Previous PIDs now belong to a different tree.
+        later = [(100, 1, 10), (101, 1, 10), (103, 101, 10), (102, 1, group)]
+        listings = iter([initial])
+        def ps(command, **kwargs):
+            rows = next(listings, later)
+            status = ' S' if 'stat=' in command[-1] else ''
+            return Mock(stdout=''.join(f'{p} {pp} {pg}{status}\n' for p, pp, pg in rows))
+        with patch.object(project_runtime.subprocess, 'run', side_effect=ps), \
+                patch.object(os, 'getsid', return_value=group), patch.object(os, 'kill') as kill:
+            project_runtime.terminate(process, False)
+        killed = [call.args[0] for call in kill.call_args_list if call.args[1] == signal.SIGKILL]
+        self.assertEqual(killed, [102])
+
+    def test_empty_build_group_returns_without_grace_sleep(self):
+        process = Mock(pid=100)
+        process.poll.return_value = 0
+        with patch.object(os, 'killpg'), patch.object(project_runtime.subprocess, 'run', return_value=Mock(stdout='')), \
+                patch.object(time, 'sleep') as sleep:
+            project_runtime.terminate(process, True)
+        sleep.assert_not_called()
 
     def test_cli_group_cancellation_keeps_pipes_open_for_cleanup(self):
         self.wrapper.write_text('#!' + sys.executable + '''
@@ -467,6 +536,22 @@ parent_death_signal()()
         self.assertTrue(self.invoke()['ok'])
         with patch.dict(os.environ, CLAUDE_PLUGIN_OPTION_APP_PORT='8197'):
             self.assertFalse(self.invoke()['reused'])
+
+    def test_host_injected_environment_reuses_verification(self):
+        names = ('CLAUDECODE', 'AI_AGENT', 'GIT_EDITOR', 'COREPACK_ENABLE_AUTO_PIN',
+                 'WSL_INTEROP', 'WARP_TERMINAL_SESSION_UUID', 'HERDR_SESSION_ID')
+        with patch.dict(os.environ):
+            for name in names:
+                os.environ.pop(name, None)
+            self.assertTrue(self.invoke()['ok'])
+            for name in names:
+                self.invoke()  # establish the same baseline for each independent variation
+                with self.subTest(name=name), patch.dict(os.environ, {name: 'host-session'}):
+                    self.assertTrue(self.invoke()['reused'])
+            self.source.write_text('// ${AI_AGENT}')
+            self.assertFalse(self.invoke()['reused'])
+            with patch.dict(os.environ, AI_AGENT='host-session'):
+                self.assertFalse(self.invoke()['reused'])
 
     def test_symlink_directory_and_oversized_inputs_never_stamp(self):
         external = self.root / 'external'
