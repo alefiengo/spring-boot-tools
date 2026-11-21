@@ -43,15 +43,17 @@ templates (`.env.example`, `.env.sample`, `.env.template`); local `.env`,
 `.env.*` and `*.env` files ask for confirmation. Under test paths
 (`src/test/**`, `*-test.*`, `application-test*`) Spring configuration, Compose
 files and `.env` templates ask instead of deny. In `.env` files a single-quoted
-value is literal, so `'${VAR}'` is flagged like any literal; a block scalar
-indicator (`|` or `>`) on the line after a credential key is flagged as on the
-same line; `classpath:` and `file:` references under `private-key`,
+value is literal, so `'${VAR}'` is flagged like any literal, also as the password
+of a URL; a block scalar after a credential key is checked by its first content line: with
+the indicator (`|` or `>`) on the key's line it is always flagged, with the
+indicator on the next line the content is classified like an ordinary value (a
+placeholder is allowed); the finding includes that content line, so editing only
+the body of an existing block is detected; `classpath:` and `file:` references under `private-key`,
 `signing-key` or `credentials` are exempt on either line. It does not
 inspect Java sources, JSON, XML or other file types, checks only the first
 line of a multi-line YAML scalar, misses URL passwords containing an unencoded
 `/` or `@` and JDBC `;password=...` parameters, recognizes only the listed
-token formats, checks comments for tokens only, and still treats `${VAR}` as a
-placeholder for credentials inside a URL in a single-quoted dotenv value. The DDL
+token formats and checks comments for tokens only. The DDL
 guard exempts `src/test/**`, `*-test.*` and `application-test*` files. Missing
 Python or malformed hook input produces a visible diagnostic and fails open;
 a discovery error other than "no project found" is reported as a notice. Keep
