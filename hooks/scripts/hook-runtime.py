@@ -7,8 +7,10 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
+import time
 
 
 def emit(event, message, decision='deny', system=None):
@@ -79,7 +81,7 @@ def introduced(before, after):
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'runtime'))
-from project_runtime import discover, run_build, BuildCancelled, fingerprint, private_dir, state_dir
+from project_runtime import discover, run_build, BuildCancelled, fingerprint, private_dir, read_regular, state_dir
 from sql_lint import lint_hook
 
 
@@ -110,6 +112,7 @@ TOKENS = (
 )
 # A next-line YAML value that starts a sequence, mapping, tag, anchor, alias or
 # collection is nested structure, not a plain or quoted scalar.
+BLOCK_SCALAR = re.compile(r'[|>][-+1-9]{0,2}(?:\s+#.*)?$')
 YAML_NESTED = re.compile(r"(?:-(?:\s|$)|[\w.-]{1,512}\s*:(?:\s|$)|[\"'][^\"']{0,512}[\"']\s*:(?:\s|$)|[?&*|>!{\[%@`])")
 
 
@@ -204,11 +207,25 @@ def compose_placeholder(value):
     return False
 
 
-def literal(value, compose=False):
-    """True unless the value is empty, a known dummy or a placeholder."""
-    if value.lower() in SAFE_VALUES or re.fullmatch(r'<[^<>]+>', value) or safe_placeholder(value):
+def literal(value, compose=False, placeholders=True):
+    """True unless the value is empty, a known dummy or (when interpolated) a placeholder."""
+    if value.lower() in SAFE_VALUES or re.fullmatch(r'<[^<>]+>', value):
         return False
-    return not (compose and compose_placeholder(value))
+    if not placeholders:
+        return True
+    return not (safe_placeholder(value) or (compose and compose_placeholder(value)))
+
+
+def credential_literal(key, scalar, compose, dotenv):
+    """Classify one scalar of a credential key, still quoted, on its line or the next one."""
+    value = unquote(scalar)
+    if key.endswith(('privatekey', 'signingkey', 'credentials')) and value.startswith(('classpath:', 'file:')):
+        return False  # key material remains in the referenced resource, not this scalar
+    if value.startswith('{') or value in ('[]', '{}'):
+        return False  # nested configuration is inspected field by field
+    # dotenv keeps single-quoted values literally: '${VAR}' is not interpolated there.
+    single = dotenv and re.match(r"'.*'$", re.split(r'\s+#', scalar.strip(), maxsplit=1)[0].strip()) is not None
+    return literal(value, compose, placeholders=not single)
 
 
 def url_credential(line, compose):
@@ -237,18 +254,19 @@ def token_finding(line):
     return None
 
 
-def secret_findings(text, path, compose=False):
+def secret_findings(text, path, compose=False, dotenv=False):
     findings = []
     yaml = path.suffix in ('.yaml', '.yml')
-    pending = None  # (indent, key, line) of a YAML credential key whose value starts on the next line
+    pending = None  # (indent, name, key, line) of a YAML credential key whose value starts on the next line
     for line in text.splitlines():
         stripped = line.strip()
         comment = line.lstrip().startswith(('#', '!'))
         if pending and stripped and not comment:
-            indent, name, key_line = pending
+            indent, name, key, key_line = pending
             pending = None
-            if (len(line) - len(line.lstrip()) > indent and not YAML_NESTED.match(stripped)
-                    and literal(unquote(stripped), compose)):
+            if len(line) - len(line.lstrip()) > indent and (
+                    BLOCK_SCALAR.match(stripped)  # like the same-line 'password: |', the indicator itself is flagged
+                    or (not YAML_NESTED.match(stripped) and credential_literal(key, stripped, compose, dotenv))):
                 findings.append((key_line.strip() + '\n' + stripped, name))
                 continue
         known_token = token_finding(line)
@@ -273,18 +291,14 @@ def secret_findings(text, path, compose=False):
             position = start
             if depth:
                 continue  # a nested placeholder default is a value, not a new key
-            value = unquote(flow_scalar(raw) if flow else raw)
+            scalar = flow_scalar(raw) if flow else raw
             key = re.sub(r'[^a-z0-9]', '', name.lower())
             if not key.endswith(SECRET_SUFFIXES):
                 continue  # policy flags, credential names and token URLs are not credentials
             if yaml and not flow and not raw.strip():
-                pending = (len(line) - len(line.lstrip()), name, line)
+                pending = (len(line) - len(line.lstrip()), name, key, line)
                 continue
-            if key.endswith(('privatekey', 'signingkey', 'credentials')) and value.startswith(('classpath:', 'file:')):
-                continue  # key material remains in the referenced resource, not this scalar
-            if value.startswith('{') or value in ('[]', '{}'):
-                continue  # nested configuration is inspected field by field
-            if not literal(value, compose):
+            if not credential_literal(key, scalar, compose, dotenv):
                 continue
             found = name
             break  # findings are compared per line
@@ -317,8 +331,9 @@ def secrets(data, path):
     if kind is None:
         return
     compose = kind != 'config'  # Compose interpolation syntax is not Spring placeholder syntax
+    dotenv = kind in ('local', 'template', 'other')
     current, proposal = contents(data, path)
-    name = introduced(secret_findings(current, path, compose), secret_findings(proposal, path, compose))
+    name = introduced(secret_findings(current, path, compose, dotenv), secret_findings(proposal, path, compose, dotenv))
     if name is None:
         return
     if kind == 'local':
@@ -435,6 +450,9 @@ def ddl(data, path):
 STOP_MODES = ('verify', 'compile', 'off')
 STOP_TIMEOUT = (300, 30, 600)  # default, minimum, maximum seconds; hooks.json allows 660
 SESSION_BASELINES = 64
+BASELINE_NAME = re.compile(r'[0-9a-f]{64}\.json')
+STALE_TEMPORARY_SECONDS = 3600
+MAX_RECORD_BYTES = 4096
 # Exported only to some hook events; it must not make SessionStart and Stop fingerprints differ.
 EVENT_ONLY_ENV = ('CLAUDE_ENV_FILE',)
 MAX_CHANGED_LISTED = 10
@@ -484,6 +502,75 @@ def baseline_file(root, session):
     return folder / (hashlib.sha256(session.encode()).hexdigest() + '.json')
 
 
+def unverified_file(root):
+    return state_dir(root) / 'stop-unverified.json'
+
+
+def read_record(path):
+    """Small JSON object from a regular file; None when absent. Raises ValueError when unusable."""
+    content = read_regular(path, MAX_RECORD_BYTES)
+    if content is None:
+        if os.path.lexists(path):
+            raise ValueError(f'Unusable hook state entry: {path}')
+        return None
+    value = json.loads(content[1])
+    if not isinstance(value, dict):
+        raise ValueError(f'Unusable hook state entry: {path}')
+    return value
+
+
+def valid_fingerprint(value):
+    return isinstance(value, str) and bool(re.fullmatch(r'[0-9a-f]{64}', value))
+
+
+def write_private(folder, prefix, data):
+    """Write a private temporary file and return its path; the caller publishes it."""
+    handle, temporary = tempfile.mkstemp(prefix=prefix, dir=folder)
+    try:
+        with os.fdopen(handle, 'w') as output:
+            json.dump(data, output)
+    except BaseException:
+        os.unlink(temporary)
+        raise
+    return temporary
+
+
+def publish_baseline(path, session, value):
+    """Publish without replacement: a concurrent or earlier baseline always wins."""
+    temporary = write_private(path.parent, 'baseline-', {'session': session, 'fingerprint': value})
+    try:
+        os.link(temporary, path)
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        os.unlink(temporary)
+
+
+def record_unverified(root, mode, value=None):
+    """Remember, per project, the inputs of the last Stop check that failed or blocked."""
+    try:
+        value = value or session_fingerprint(root)
+        temporary = write_private(state_dir(root), 'unverified-', {'fingerprint': value, 'mode': mode})
+        try:
+            os.replace(temporary, unverified_file(root))
+        except OSError:
+            os.unlink(temporary)
+            raise
+    except (OSError, ValueError):
+        pass  # without a record a later baseline cannot match an unknown tree
+
+
+def clear_unverified(root, mode):
+    """A passing verify clears any failure; a passing compile clears only a compile failure."""
+    try:
+        path = unverified_file(root)
+        if mode == 'verify' or (read_record(path) or {}).get('mode') == mode:
+            path.unlink(missing_ok=True)  # also drops an unusable entry, which never allows a skip
+    except (OSError, ValueError):
+        pass
+
+
 def session_id(data):
     session = data.get('session_id')
     return session if isinstance(session, str) and 0 < len(session) <= 256 else None
@@ -504,27 +591,26 @@ def record_baseline(data):
     try:
         root = discover(project_location(data))['root']
         path = baseline_file(root, session)
-        if path.exists() or path.is_symlink():
+        if os.path.lexists(path):
             return
-        value = session_fingerprint(root)
-        handle, temporary = tempfile.mkstemp(prefix='baseline-', dir=path.parent)
-        try:
-            with os.fdopen(handle, 'w') as output:
-                json.dump({'session': session, 'fingerprint': value}, output)
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-        prune_baselines(path)
+        if publish_baseline(path, session, session_fingerprint(root)):
+            prune_baselines(path)
     except (OSError, ValueError, KeyError):
         return
 
 
 def prune_baselines(keep):
-    entries = []
-    for path in keep.parent.glob('*.json'):
+    """Keep the newest baselines; remove only regular baseline files and stale temporaries."""
+    entries, now = [], time.time()
+    for path in keep.parent.iterdir():
         try:
-            entries.append((path.lstat().st_mtime_ns, path))
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode):
+                continue
+            if BASELINE_NAME.fullmatch(path.name):
+                entries.append((metadata.st_mtime_ns, path))
+            elif path.name.startswith('baseline-') and now - metadata.st_mtime > STALE_TEMPORARY_SECONDS:
+                path.unlink()  # left by a SessionStart killed while writing
         except OSError:
             continue
     entries.sort(reverse=True)
@@ -537,17 +623,21 @@ def prune_baselines(keep):
 
 
 def unchanged_since_session_start(data, root):
-    """True only when this session's baseline exists and equals the current fingerprint."""
+    """True only when this session's baseline equals the current fingerprint and the
+    last Stop check of the project did not fail or block on that same tree."""
     session = session_id(data)
     if session is None:
         return False
     try:
-        handle = os.open(baseline_file(root, session), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-        with os.fdopen(handle) as source:
-            stored = json.loads(source.read(4096))
-        baseline = stored.get('fingerprint') if stored.get('session') == session else None
-        return isinstance(baseline, str) and bool(re.fullmatch(r'[0-9a-f]{64}', baseline)) and session_fingerprint(root) == baseline
-    except (OSError, ValueError, AttributeError):
+        stored = read_record(baseline_file(root, session))
+        if stored is None or stored.get('session') != session or not valid_fingerprint(stored.get('fingerprint')):
+            return False
+        current = session_fingerprint(root)
+        if current != stored['fingerprint']:
+            return False
+        failed = read_record(unverified_file(root))
+        return failed is None or (valid_fingerprint(failed.get('fingerprint')) and failed['fingerprint'] != current)
+    except (OSError, ValueError):
         return False
 
 
@@ -585,9 +675,19 @@ def build(event, data):
         return finish()
     try:
         result = run_build({'projectRoot': info['root'], 'task': mode, 'timeoutMs': timeout}, own_process_group=True)
-    except (OSError, ValueError, KeyError, TimeoutError, BuildCancelled) as error:
+    except BuildCancelled as error:
         notes.insert(0, str(error))
         return finish()
+    except (OSError, ValueError, KeyError, TimeoutError) as error:
+        record_unverified(info['root'], mode)
+        notes.insert(0, str(error))
+        return finish()
+    if result['ok'] and not result.get('inputsChanged'):
+        clear_unverified(info['root'], mode)
+    else:
+        # The tree a later session starts from: before the build unless the build changed it.
+        before = result.get('fingerprint')
+        record_unverified(info['root'], mode, None if result.get('inputsChanged') or not valid_fingerprint(before) else before)
     if not result['ok']:
         detail = 'timed out' if result['timedOut'] else ('exceeded output limit' if result['outputLimitExceeded'] else f"exit {result['exitCode']}")
         output = result['stdout'] + result['stderr']
