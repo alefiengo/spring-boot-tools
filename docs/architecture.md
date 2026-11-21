@@ -63,11 +63,12 @@ root>`. The home directory comes from the user database, not from `TMPDIR`,
 environments differ. The state directories must be owned by the current
 user with mode 0700 (and `~/.cache` owned by the user and not world-writable)
 or the runtime refuses them. Plugin builds acquire that lock before executing. Timeouts, cancellation and output limits terminate the
-build process tree: SIGTERM first, 750 ms for the build's own cleanup, then
-SIGKILL for survivors (the hook ends the process group before it computes the
+build process tree: SIGTERM first, up to 750 ms for the build's own cleanup (the
+wait ends as soon as the build tree has exited), then SIGKILL for survivors (the hook ends the process group before it computes the
 post-build fingerprint, so files written by TERM handlers are counted). Failed
 or cancelled attempts invalidate reusable verification success. When the MCP server is stopped (SIGINT, SIGTERM or
-SIGHUP) it terminates the builds in progress before exiting. On Linux a hook's
+SIGHUP) it sends SIGTERM to the builds in progress, waits up to 1 s for them and
+then kills the survivors before exiting. On Linux a hook's
 build also receives SIGTERM if the hook process dies (`PR_SET_PDEATHSIG`);
 macOS has no equivalent, so a build started by a killed hook can outlive it
 until its own timeout.
@@ -113,15 +114,16 @@ and `stop_timeout_seconds` (default 300, 30 to 600, passed to the runtime as
 `timeoutMs`; the hook registration allows 660 s to cover the build and both
 fingerprints). For hooks, Claude Code 2.1.330 applies no `default` to an option
 that was never configured: `${user_config.KEY}` fails and
-`CLAUDE_PLUGIN_OPTION_<KEY>` is not exported. Shell-form hook commands, the form
-this plugin uses, reject `${user_config.*}` (the documentation allows it in
-exec-form `args`, which the plugin does not use). The hook therefore reads those
+`CLAUDE_PLUGIN_OPTION_<KEY>` is not exported. Shell-form hook commands, which this
+plugin uses, reject `${user_config.*}`; Claude Code substitutes it only in
+exec-form hook `args`, MCP/LSP configuration and skill/agent content. The hook therefore reads those
 environment variables, treats an absent or empty value as the default and, for
 an invalid value, emits a notice and uses the default. This does not apply to
 `.mcp.json`, where `${user_config.app_port}` does receive the default 8080 for an
 unconfigured option (also verified with 2.1.330); the server still falls back to
-8080 if the variable is absent or empty. The
-output is always a single JSON object, with notices in `systemMessage`.
+8080 if the variable is absent or empty. `app_port` serves Actuator and OpenAPI
+inspection. The hook emits at most one JSON object (none when there is nothing
+to report), with notices in `systemMessage`.
 
 The `session-baseline` SessionStart hook (matcher `startup|clear`) calls the
 runtime's `discover` and `fingerprint` and stores the result atomically in the
@@ -129,11 +131,8 @@ project's private state directory (`~/.cache/spring-boot-tools/build-<hash>/`,
 or the per-uid `spring-boot-tools-<uid>` fallback in the temporary directory
 described above) under `sessions/<sha256 of session id>.json` (mode 0700, at most 64 files per project, oldest pruned, never overwriting an
 existing baseline). Stop reads it with `O_NOFOLLOW` and a 4 KiB limit and skips
-silently when the current fingerprint matches. `resume`, `fork` and `compact`
-record no baseline, since they continue a conversation that may hold unverified
-edits; without a baseline, or if the fingerprint cannot be computed, Stop
-verifies as before. Consequently a tree that was already broken at session start
-is not verified until something changes. Recording is silent on every error,
+silently when the current fingerprint matches. `resume`, `fork` and `compact` do not record a new baseline. A resumed or compacted session keeps the baseline recorded when it started, so it can still skip when nothing changed; a forked session has a new ID and no baseline, so it always verifies. Without a baseline,
+or if the fingerprint cannot be computed, Stop verifies as before. Stop never skips when the current fingerprint equals the one recorded for the project's last Stop check that failed, timed out or blocked because inputs changed. That record (`stop-unverified.json` in the project's private state directory) is cleared by a passing `verify`; a passing `compile` clears only a `compile` failure. An unreadable record never allows a skip. It can still skip a tree that changed outside Claude Code after the last Stop check and was never verified. Recording is silent on every error,
 and a very large project can make it take up to the hook's 30 s limit, in which
 case no baseline exists. When a build changes its own inputs, the Stop message
 lists up to 10 changed paths from `changedInputs` and suggests `.gitignore`.
@@ -158,16 +157,28 @@ options, locale, time zone, proxies, CI variables) still counts, and a project
 file that references a host variable explicitly (such as
 `${CLAUDE_PLUGIN_OPTION_APP_PORT}`) brings that value back in. Untracked files
 that Git ignores are excluded from the file part, so a wrapper that appends to a
-git-ignored `logs/app.log` does not invalidate its own verification; ignored
-files that are build inputs must be tracked or the run forced. The runtime asks
-Git for them from the project root with a 2-second, 8 MiB, 50 000-entry bound
-and falls back to the conservative walk (ignored files count) when Git is
-unavailable, errors or exceeds a bound; that fallback can cause extra builds.
+git-ignored `logs/app.log` does not invalidate its own verification. This
+applies only when Git tracks the project's build descriptors and wrappers
+(`git ls-files --error-unmatch` finds every one present in the root); otherwise
+the conservative walk counts ignored files. Even then, sources under `src/`,
+build configuration (`pom.xml`, `build.gradle*`, `settings.gradle*`,
+`gradle.properties`, `.mvn/**`, `gradle/**`) and wrappers always stay inputs,
+ignored or not; other ignored files, such as a local `.env` outside `src/`, do
+not invalidate reuse, so an ignored file that a build reads must be tracked or
+the run forced. The runtime asks Git for them from the project root with a
+2-second, 8 MiB, 50 000-entry bound and falls back to the conservative walk when
+Git is unavailable, errors or exceeds a bound; that fallback can cause extra
+builds. The environment part also omits the host-injected variables `CLAUDECODE`,
+`AI_AGENT`, `GIT_EDITOR`, `COREPACK_ENABLE_AUTO_PIN`, `WSL_INTEROP` and
+`WARP_TERMINAL_SESSION_UUID`; an explicit `${VAR}` reference in a project file
+brings the value back.
 
-When a fingerprint differs from the recorded one, the result includes
-`changedInputs`, up to 20 sorted POSIX paths relative to the project (including
-additions, deletions and mode changes), and `changedInputsTruncated` when more
-changed. Both fields are absent when the fingerprint matches.
+When `inputsChanged` is true, the result includes `changedInputs`, up to 20
+sorted POSIX paths relative to the project whose fingerprint entry differs
+between the start and the end of the same run (including additions, deletions
+and mode changes), and `changedInputsTruncated` when more changed. It does not
+compare current inputs with the last verification. Both fields are absent when
+`inputsChanged` is false.
 
 Force execution when external tools/services changed or the application uses
 excluded artifacts as build inputs. Local records are an optimization; they
@@ -177,7 +188,8 @@ are not a replacement for independent verification before release.
 
 Source inventories use literal configuration, dependency declarations,
 annotations and SQL. An unparseable YAML document is skipped and reported in
-`warnings` with its relative path; ports from other documents and files are
+`warnings` with its relative path, line and column and a fixed error category,
+never the configuration text; ports from other documents and files are
 kept. A static endpoint's `version` is `null` unless its path has a literal
 `/v<N>` segment, and a path with a `${...}` placeholder is kept with one warning
 per file and placeholder. In OpenAPI comparison those static routes are listed
@@ -218,7 +230,13 @@ credentials in URLs (`scheme://user:password@host`, including JDBC), AWS
 the next line. Placeholders such as `${VAR}` are accepted, and Compose
 interpolation in Compose and `.env` files. It denies in Spring configuration,
 Compose files and `.env` templates, and asks for confirmation for local `.env`,
-`.env.*` and `*.env` files and in test paths. Java sources, JSON, XML and other
+`.env.*` and `*.env` files. Under test paths (`src/test/**`, `*-test.*`,
+`application-test*`) Spring configuration, Compose files and `.env` templates ask
+instead of deny. In `.env` files a single-quoted value is literal, so `'${VAR}'`
+is flagged (a credential inside a URL in such a value still treats `${VAR}` as a
+placeholder); a block scalar indicator (`|` or `>`) after a credential key is
+flagged as on the same line; `classpath:` and `file:` references under
+`private-key`, `signing-key` or `credentials` are exempt on either line. Java sources, JSON, XML and other
 file types are not inspected; only the first line of a multi-line YAML scalar is
 checked; URL passwords with an unencoded `/` or `@` and JDBC `;password=...`
 parameters are missed; only the listed token formats are recognized; comments
