@@ -74,6 +74,8 @@ JSON
 
 `task` aliases map compile/test-compile/package/verify to the discovered build system. Maven profiles are rejected for Gradle: use its declared project configuration instead. To deliberately rerun a full verification, set `reuse:false`. Inspect `ok`, `exitCode`, `timedOut`, `outputLimitExceeded` and captured output; receiving JSON alone does not mean success.
 
+When called directly from a shell, the runtime CLI runs the build in its own session. To cancel a run, send TERM, INT or HUP to the runtime process, which then ends the build tree. A SIGKILL sent to the shell's process group is not forwarded to that session. On Linux the build also ends if the runtime process dies; on macOS it can outlive the runtime until its own timeout.
+
 ### Run
 
 ```bash

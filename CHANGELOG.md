@@ -105,11 +105,15 @@ Entries marked **Behavior change** alter visible results.
   `logs/app.log`) no longer invalidates its own verification. This applies only
   when Git tracks the project's build descriptors and wrappers; sources under
   `src/`, build configuration (`pom.xml`, `build.gradle*`, `settings.gradle*`,
-  `gradle.properties`, `.mvn/**`, `gradle/**`) and wrappers always stay inputs
+  `gradle.properties`, `.mvn/**`, `gradle/**`), Spring Boot's default
+  configuration files (`application*.{yml,yaml,properties}` at each module root,
+  in `config/` and its immediate subdirectories) and wrappers always stay inputs
   even if ignored, while other ignored files (such as a local `.env` outside
   `src/`) do not invalidate reuse. If Git is unavailable, errors, does not track
   those files or exceeds its bounds (2 s, 8 MiB, 50 000 entries) the runtime
-  keeps the conservative behavior.
+  keeps the conservative behavior. Unreadable subtrees inside ignored
+  directories are skipped, and a walk of more than 100 000 entries disables
+  reuse (the build still runs and no partial verification is recorded).
 - Report `changedInputs` (up to 20 sorted relative paths, including additions,
   deletions and mode changes) and `changedInputsTruncated` when `inputsChanged`
   is true. They list the paths whose fingerprint entry differs between the start
@@ -118,8 +122,11 @@ Entries marked **Behavior change** alter visible results.
 - **Behavior change:** timeouts and cancellation send SIGTERM, wait up to 750 ms
   (ending early when the build tree exits) and then send SIGKILL to the build
   tree, so wrappers can finish their cleanup handlers; the Stop hook fingerprints
-  after the group has ended. Stopping the MCP server waits up to 1 s for its
-  builds before it kills them.
+  after the group has ended. The direct runtime CLI runs the build in its own
+  session: cancel it with TERM, INT or HUP to the runtime process; a SIGKILL to
+  the shell's process group is not forwarded; on Linux the build also ends if the
+  runtime dies, on macOS it can outlive it until its timeout. Stopping the MCP
+  server waits up to 1 s for its builds before it kills them.
 - `check_migrations` status on a Gradle project explains that database status
   is Maven-only (`flyway:info`) and how to run the configured task manually.
 - `initialize_project` names the symbolic-link component that blocks a
