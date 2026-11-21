@@ -40,7 +40,8 @@ installer only reads a `package.json` and lockfile at the plugin root, so
 ```bash
 npm ci
 node --check mcp-server/index.js
-python3 -m py_compile runtime/project_runtime.py hooks/scripts/hook-runtime.py
+python3 -m py_compile runtime/project_runtime.py runtime/project_initializer.py \
+  runtime/sql_lint.py hooks/scripts/hook-runtime.py scripts/install-doctor.py
 bash tests/run-all.sh
 claude plugin validate .claude-plugin/plugin.json --strict
 claude plugin validate .claude-plugin/marketplace.json --strict
@@ -48,6 +49,14 @@ claude plugin validate skills --strict
 claude plugin validate agents --strict
 git diff --check
 ```
+
+`scripts/validate-local.sh` runs these deterministic checks in one pass
+(`--with-npm-ci` adds `npm ci`, the only step that uses the network), runs both
+`git diff --check` variants and prints an environment header: OS and kernel, WSL
+detection, Node, npm, Python, Java, Maven, Gradle and Claude Code versions and the
+git commit. Paste its output into the pull request. It exits nonzero when any
+check fails; a check it cannot run (for example, no `claude` on `PATH`) is
+reported as skipped, not passed.
 
 `tests/run-all.sh` runs the hook, MCP, runtime, packaging and evaluation-harness
 regressions. MCP tests use local processes and HTTP listeners. Build tests use
@@ -67,7 +76,10 @@ they do not certify a production provider, broker or performance target.
 GitHub Actions and automatic Dependabot updates are disabled for this
 repository. Run the applicable checks locally and record the commands,
 environment and results in the pull request. Linux results do not establish
-macOS compatibility; record platform coverage explicitly.
+macOS compatibility; record platform coverage explicitly. Platform coverage
+today: Linux and WSL2 are exercised; macOS is unverified, and the code has
+macOS-specific paths (`renameatx_np`, no `PR_SET_PDEATHSIG`, the `staff` group)
+that no recorded run has covered.
 
 The separate real-build check exercises pinned Maven 3.10.0 and Gradle 9.8.1
 fixtures through the shared runtime and host adapters:
@@ -93,6 +105,23 @@ npm audit
 Review npm and Maven dependency updates manually and run the affected checks.
 GitHub vulnerability alerts remain enabled independently of automatic updates.
 
+## Working in this repository with Claude Code
+
+Opening this repository itself in Claude Code loads the root `.mcp.json` as a
+project MCP server. Outside a plugin context `${CLAUDE_PLUGIN_ROOT}` is not
+resolved, and `node_modules` is absent until `npm ci` runs, so that server fails
+to connect. Maintainers should decline the project server when prompted, or
+disable it in their own (untracked) `.claude/settings.local.json`:
+
+```json
+{
+  "disabledMcpjsonServers": ["spring-boot"]
+}
+```
+
+Test the plugin itself with `claude --plugin-dir /absolute/path/to/this/repo`
+from a Spring application, where the plugin's own registration applies.
+
 ## Behavioral evaluations
 
 Evaluations use a logged-in Claude Code account, make paid model calls and
@@ -105,7 +134,9 @@ claude plugin eval . --trust-plugin --runs 1 --ablation none \
   --threshold 1 --no-publish
 ```
 
-Require every release criterion to pass. Compare judges against one frozen
+This repository records no behavioral evaluation results, so it claims no
+measured model effectiveness for its skills or agents. Require every release criterion
+to pass. Compare judges against one frozen
 response, choose the canonical judge before examining results and retain
 failures alongside diagnostics. See [evals/README.md](evals/README.md) for the
 freeze/judge commands. Model behavior checks supplement executable regressions.

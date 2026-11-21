@@ -3,8 +3,9 @@ name: spring-boot-ci
 description: >
   CI pipelines for Spring Boot services: complete GitHub Actions and GitLab CI
   templates (dependency caching, mvn verify, Testcontainers, image build and
-  push tagged by SHA), pipeline-integrated scans (secrets, outdated
-  dependencies, SBOM), and 12-factor environment handling. Use when asked to
+  push tagged by SHA), pipeline-integrated checks (secret scanning, outdated
+  dependency reports, SBOM; vulnerability scanning is left to the
+  organization's scanner), and 12-factor environment handling. Use when asked to
   set up CI, write a GitHub Actions workflow or .gitlab-ci.yml, speed up a
   pipeline, add scans to CI, or fix a failing pipeline.
 ---
@@ -20,7 +21,7 @@ Build once per source state and share immutable reports/artifacts with downstrea
 ## What the pipeline does, in order
 
 1. **Verify**: `./mvnw verify` (unit + integration with Testcontainers); configure Failsafe or the appropriate Gradle integration task so integration tests actually run.
-2. **Scan**: secrets in history, outdated/vulnerable dependencies, SBOM.
+2. **Scan**: secrets in history, outdated-dependency report, SBOM. Vulnerable-dependency scanning needs the organization's scanner (see the note after the templates).
 3. **Build image**: only on `main` (and `develop` for integration
    environments), tagged by SHA + branch.
 4. **Push**: registry of the deployment target.
@@ -162,7 +163,7 @@ verify:
 secrets-history:
   stage: test
   image:
-    name: ghcr.io/gitleaks/gitleaks:latest
+    name: ghcr.io/gitleaks/gitleaks:v8.30.1
     entrypoint: [""]
   script:
     - gitleaks git . --redact --report-path gitleaks-report.json --exit-code 1
@@ -215,14 +216,14 @@ image-build:
 - Config files in the repo (`application.yml`) contain structure and safe
   defaults only; anything that varies per deployment is `${ENV_VAR}`.
 
-Pin third-party CI actions/images by reviewed release or digest in the adopted pipeline; the broad tags above are illustrative (action majors, `docker:29` and `maven:3.10` verified 2026-11-10; GitHub runners no longer provide Node 20 for actions since 2026-09-23). gitleaks-action needs a `GITLEAKS_LICENSE` secret in organization repositories; alternatively run the pinned `gitleaks` CLI (`gitleaks git . --redact --exit-code 1`). Maven version-update reports are informational, not vulnerability scans. Add the organization's dependency vulnerability scanner as a required gate, with its failure policy and maintained vulnerability feed. If GHCR rejects a repository name containing uppercase characters, normalize the image name to lowercase before assigning tags.
+Pin third-party CI actions/images by reviewed release or digest in the adopted pipeline; the broad tags above are illustrative (the `gitleaks` image tag `v8.30.1` exists on GHCR as of 2026-11-21; action majors, `docker:29` and `maven:3.10` verified 2026-11-10; GitHub runners no longer provide Node 20 for actions since 2026-09-23). gitleaks-action needs a `GITLEAKS_LICENSE` secret in organization repositories; alternatively run the pinned `gitleaks` CLI (`gitleaks git . --redact --exit-code 1`). Maven version-update reports are informational, not vulnerability scans. Add the organization's dependency vulnerability scanner as a required gate, with its failure policy and maintained vulnerability feed. If GHCR rejects a repository name containing uppercase characters, normalize the image name to lowercase before assigning tags.
 
 ## Scaling down CI noise
 
 - Run the dependency/scan jobs **nightly or weekly**, not per push
   (schedule trigger / `rules: - if: $CI_PIPELINE_SOURCE == "schedule"`),
   unless the repo changes dependencies frequently.
-- Parallelize `verify` and `scan` — they are independent.
+- Parallelize `verify` and `scan` — they are independent. When `scan` moves to a schedule, drop it from the `needs` of the image job (`image` in GitHub Actions, `image-build` in GitLab); otherwise the image job waits on a job that no longer runs on push.
 - For local experiments only, Testcontainers reuse requires `testcontainers.reuse.enable=true` in `~/.testcontainers.properties` and `.withReuse(true)` on the container. Do not enable reuse in CI; benchmark build and container startup separately.
 
 ## References

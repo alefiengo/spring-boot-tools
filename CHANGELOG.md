@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+Entries marked **Behavior change** alter visible results.
+
+### Shared runtime
+
+- **Behavior change:** `run_tests` with `testClass` on a Maven reactor adds
+  `-Dsurefire.failIfNoSpecifiedTests=false`, so modules that do not contain the
+  class no longer fail the build. A filter that executes no test now returns
+  `ok: false` with a `No tests matched testClass ...` diagnostic and the real
+  exit code, even when the client omits `collectTestReports`; a suite whose
+  tests were all skipped does not count as executed.
+- **Behavior change:** in a multi-project Gradle build, a `testClass` filter
+  without `module` is rejected during planning with an explanation, because
+  Gradle fails a test task that matches nothing. Pass `module`.
+- **Behavior change:** the verification fingerprint no longer includes host and
+  session identity (`CLAUDE_*`, `CODEX_*`, `HERDR_*` variables and terminal,
+  multiplexer, SSH and VS Code IPC handles), so a Stop hook and an MCP call
+  can reuse one verification. Other variables, including JVM options, locale,
+  time zone, proxies and CI variables, still count, and an explicit
+  `${VAR}` reference in a project file reintroduces its value.
+- **Behavior change:** untracked files that Git ignores no longer count as
+  inputs, so a build that writes to a git-ignored path (for example
+  `logs/app.log`) no longer invalidates its own verification. If Git is
+  unavailable, errors or exceeds its bounds (2 s, 8 MiB, 50 000 entries) the
+  runtime keeps the conservative behavior.
+- Report `changedInputs` (up to 20 sorted relative paths, including additions,
+  deletions and mode changes) and `changedInputsTruncated` when a fingerprint
+  differs from the recorded one.
+- **Behavior change:** timeouts and cancellation send SIGTERM, wait 750 ms and
+  then send SIGKILL to the build tree, so wrappers can finish their cleanup
+  handlers; the Stop hook fingerprints after the group has ended.
+- `check_migrations` status on a Gradle project explains that database status
+  is Maven-only (`flyway:info`) and how to run the configured task manually.
+- `initialize_project` names the symbolic-link component that blocks a
+  destination and points macOS users (`/tmp`, `/var`) to the resolved path,
+  instead of reporting `Not a directory`.
+
+### Documentation, skills and repository process
+
+- Document the runtime changes above in `docs/architecture.md` and the README
+  tool catalog.
+- `SECURITY.md` names 0.4.x as the supported series.
+- Label `docs/audit-2026-10-31.md` as the v0.1.0-baseline audit, with a note
+  that its counts are historical.
+- Add `scripts/validate-local.sh`, which runs the deterministic checks from
+  `CONTRIBUTING.md` and prints an environment header (OS, WSL, tool versions,
+  commit) for pull requests. GitHub Actions stay disabled. `CONTRIBUTING.md`
+  records platform coverage (Linux and WSL2 exercised, macOS unverified) and
+  that no behavioral evaluation results are recorded.
+- `CONTRIBUTING.md`: complete the `py_compile` list; explain that opening this
+  repository in Claude Code loads the root `.mcp.json` as a project server that
+  fails outside plugin context, and how to disable it locally.
+- README states that `sb-test-writer` is limited to test sources only by its
+  instructions.
+- Skills: pin the GitLab gitleaks image to `v8.30.1` instead of `latest`, fix
+  the `scan` dependency advice and stop promising vulnerability scanning in
+  `spring-boot-ci`; query a `TIMESTAMPTZ` column with `Instant` in
+  `spring-boot-database`; use an explicit constructor instead of Lombok's
+  `@RequiredArgsConstructor` and clarify the DTO collection advice in
+  `spring-boot-codegen`; use a HikariCP `leak-detection-threshold` that can
+  fire in `spring-boot-performance`; make the stateless-session checklist item
+  conditional in `spring-boot-security-hardening`.
+- Use `spring-boot-starter-security-oauth2-resource-server` in the example
+  project; the old starter name still resolves in Boot 4.1.1 as a deprecated
+  starter, as noted in the migration skill.
+
 ## [0.4.0](https://github.com/alefiengo/spring-boot-tools/compare/v0.3.0...v0.4.0)
 
 - Move `package.json` and `package-lock.json` from `mcp-server/` to the plugin
