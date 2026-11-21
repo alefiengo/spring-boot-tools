@@ -2,7 +2,7 @@
 
 ## Registration and responsibilities
 
-`.claude-plugin/plugin.json` describes the plugin and its `app_port` option.
+`.claude-plugin/plugin.json` describes the plugin and its options: `app_port`, which the MCP server uses for Actuator and runtime OpenAPI inspection, and the Stop hook's `stop_verification` and `stop_timeout_seconds`.
 The marketplace points to this plugin. `.mcp.json` launches the Node.js server
 with the project root (`PROJECT_ROOT`, set from `CLAUDE_PROJECT_DIR`) and the
 application port; it sets no `cwd`, because Claude Code resolves `${...}` only
@@ -111,17 +111,23 @@ shape it: `stop_verification` (`verify`, the default; `compile`, Maven `compile`
 or Gradle `classes`, which never satisfies the full verification gate; or `off`)
 and `stop_timeout_seconds` (default 300, 30 to 600, passed to the runtime as
 `timeoutMs`; the hook registration allows 660 s to cover the build and both
-fingerprints). Claude Code 2.1.330 applies no `default` to an option that was
-never configured: `${user_config.KEY}` fails and `CLAUDE_PLUGIN_OPTION_<KEY>` is
-not exported, and hook registrations cannot use `${user_config.*}`. The hook
-therefore reads those environment variables, treats an absent or empty value as
-the default and, for an invalid value, emits a notice and uses the default. The
+fingerprints). For hooks, Claude Code 2.1.330 applies no `default` to an option
+that was never configured: `${user_config.KEY}` fails and
+`CLAUDE_PLUGIN_OPTION_<KEY>` is not exported. Shell-form hook commands, the form
+this plugin uses, reject `${user_config.*}` (the documentation allows it in
+exec-form `args`, which the plugin does not use). The hook therefore reads those
+environment variables, treats an absent or empty value as the default and, for
+an invalid value, emits a notice and uses the default. This does not apply to
+`.mcp.json`, where `${user_config.app_port}` does receive the default 8080 for an
+unconfigured option (also verified with 2.1.330); the server still falls back to
+8080 if the variable is absent or empty. The
 output is always a single JSON object, with notices in `systemMessage`.
 
 The `session-baseline` SessionStart hook (matcher `startup|clear`) calls the
 runtime's `discover` and `fingerprint` and stores the result atomically in the
-project's private state directory under `sessions/<sha256 of session id>.json`
-(mode 0700, at most 64 files per project, oldest pruned, never overwriting an
+project's private state directory (`~/.cache/spring-boot-tools/build-<hash>/`,
+or the per-uid `spring-boot-tools-<uid>` fallback in the temporary directory
+described above) under `sessions/<sha256 of session id>.json` (mode 0700, at most 64 files per project, oldest pruned, never overwriting an
 existing baseline). Stop reads it with `O_NOFOLLOW` and a 4 KiB limit and skips
 silently when the current fingerprint matches. `resume`, `fork` and `compact`
 record no baseline, since they continue a conversation that may hold unverified

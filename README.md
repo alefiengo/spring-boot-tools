@@ -132,14 +132,20 @@ Code 2.1.271 or newer):
 
 | Option | Values | Default | Effect |
 |---|---|---|---|
-| `app_port` | 1-65535 | 8080 | Default application port for Actuator inspection |
+| `app_port` | 1-65535 | 8080 | Default application port for Actuator and runtime OpenAPI inspection (MCP server) |
 | `stop_verification` | `verify`, `compile`, `off` | `verify` | Build check when Claude stops: Maven `verify` / Gradle `check`, Maven `compile` / Gradle `classes` (never counts as a full verification), or none |
 | `stop_timeout_seconds` | 30-600 | 300 | Time limit for that build (the Stop hook itself allows 660 s) |
 
-Claude Code 2.1.330 does not apply a `default` to an option that was never
-configured: `${user_config.KEY}` fails with "Plugin option ... isn't set", and
-`CLAUDE_PLUGIN_OPTION_<KEY>` is not exported (a hook cannot use
-`${user_config.*}` at all). The Stop hook therefore reads the environment
+Defaults reach the two consumers differently (verified with Claude Code
+2.1.330). The MCP server receives `app_port` through `${user_config.app_port}`
+in `.mcp.json`, and that substitution does receive the default 8080 when the
+option was never configured; the server also falls back to 8080 if the variable
+is absent or empty. Hooks do not get that treatment: for a hook, an option that
+was never configured has no default, `${user_config.KEY}` fails with "Plugin
+option ... isn't set" and `CLAUDE_PLUGIN_OPTION_<KEY>` is not exported.
+`${user_config.*}` is also rejected in shell-form hook commands, the form this
+plugin uses (the Claude Code documentation allows it in exec-form `args`; this
+plugin does not exercise that). The Stop hook therefore reads the environment
 variables itself, treats an absent or empty value as the default and, for an
 invalid value, shows a notice and uses the default. Project build files
 determine the build tool and dependency versions.
@@ -268,7 +274,9 @@ checked for tokens only, not for keys or URLs. Values such as `password` or
 
 The Stop hook skips verification when the project fingerprint equals the one
 `session-baseline` recorded when the session started (stored under
-`~/.cache/spring-boot-tools/build-<hash>/sessions/`, at most 64 per project).
+`~/.cache/spring-boot-tools/build-<hash>/sessions/`, or the per-uid private
+`spring-boot-tools-<uid>` directory in the temporary directory when the runtime
+falls back to it; at most 64 per project).
 `resume`, `fork` and `compact` record no baseline, so those sessions always
 verify. This skips even a tree that was already broken when the session began.
 A baseline that cannot be recorded or read means Stop verifies as before.

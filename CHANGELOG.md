@@ -9,16 +9,18 @@ Entries marked **Behavior change** alter visible results.
 - **Behavior change:** the Stop hook skips verification, silently, when the
   project fingerprint equals the one recorded when the session started. The new
   `session-baseline` SessionStart hook (`startup` and `clear` only) stores it
-  under `~/.cache/spring-boot-tools/build-<hash>/sessions/` (at most 64 per
-  project). `resume`, `fork` and `compact` record none, so they always verify.
+  under `~/.cache/spring-boot-tools/build-<hash>/sessions/` (or the per-uid
+  temporary fallback directory; at most 64 per project). `resume`, `fork` and `compact` record none, so they always verify.
   A tree that was already broken at session start is not re-verified until
   something changes. The plugin now registers five hooks.
 - New options `stop_verification` (`verify` by default, `compile` or `off`) and
   `stop_timeout_seconds` (300 by default, 30 to 600). `options` in the manifest
-  requires Claude Code 2.1.271 or newer. Claude Code 2.1.330 does not apply a
-  `default` to an option that was never configured, so the hook reads
+  requires Claude Code 2.1.271 or newer. For hooks, Claude Code 2.1.330 does not
+  apply a `default` to an option that was never configured (and shell-form hook
+  commands reject `${user_config.*}`), so the hook reads
   `CLAUDE_PLUGIN_OPTION_*`, treats absence as the default and falls back to the
-  default, with a notice, on an invalid value. `compile` never satisfies the
+  default, with a notice, on an invalid value. `.mcp.json` is unaffected:
+  `${user_config.app_port}` still receives the default 8080. `compile` never satisfies the
   full verification gate. The Stop hook timeout is 660 s.
 - The Stop message names up to 10 inputs that changed during the build and
   suggests `.gitignore` for build outputs; the hook always emits one JSON
