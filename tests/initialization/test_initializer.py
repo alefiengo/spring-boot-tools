@@ -145,8 +145,12 @@ class InitializerTests(unittest.TestCase):
     def test_symlink_target_and_ancestor_and_traversal(self):
         (self.root / 'real').mkdir()
         (self.root / 'link').symlink_to(self.root / 'real', target_is_directory=True)
-        for target in ('../escape', 'real/../escape', 'link/new', 'link'):
+        for target in ('../escape', 'real/../escape'):
             with self.subTest(target=target), self.assertRaises((OSError, ValueError)):
+                self.run_init(targetDirectory=target)
+        for target in ('link/new', 'link'):
+            with self.subTest(target=target), self.assertRaisesRegex(
+                    (OSError, ValueError), r'[Ss]ymlinked path components.*link.*macOS.*/tmp.*?/var.*resolved path'):
                 self.run_init(targetDirectory=target)
         self.assertEqual(list((self.root / 'real').iterdir()), [])
         self.assertEqual(self.calls, [])
@@ -227,7 +231,7 @@ class InitializerTests(unittest.TestCase):
             parent.rename(self.root / 'moved')
             parent.symlink_to(outside, target_is_directory=True)
             return files
-        with patch.object(init, 'extract_archive', side_effect=swap), self.assertRaises(OSError):
+        with patch.object(init, 'extract_archive', side_effect=swap), self.assertRaisesRegex(ValueError, 'Symlinked.*parent'):
             self.run_init(targetDirectory='parent/app')
         self.assertEqual(list(outside.iterdir()), [])
         self.assertEqual(list((self.root / 'moved').iterdir()), [])

@@ -31,7 +31,19 @@ class BuildCancelled(RuntimeError):
 
 
 BUILD_FILES = ('pom.xml', 'build.gradle.kts', 'build.gradle')
-INVOCATION_ENV = {'CLAUDE_PROJECT_DIR', 'CLAUDE_PLUGIN_ROOT', 'CLAUDE_SESSION_ID', 'CODEX_THREAD_ID', 'MCP_SERVER_NAME', 'PROJECT_ROOT', 'PWD', 'OLDPWD', 'SHLVL', '_'}
+# Host metadata differs between MCP, hooks and agent sessions. Explicit ${VAR}
+# references in project files still capture these values as build inputs.
+INVOCATION_PREFIXES = ('CLAUDE_', 'CODEX_', 'HERDR_')
+INVOCATION_ENV = {
+    'MCP_SERVER_NAME', 'PROJECT_ROOT', 'PWD', 'OLDPWD', 'SHLVL', '_',
+    # Terminal/window identifiers, emulator version and multiplexer endpoints.
+    'TERM_SESSION_ID', 'WINDOWID', 'WT_SESSION', 'ITERM_SESSION_ID', 'KITTY_WINDOW_ID',
+    'TERM_PROGRAM_VERSION', 'TMUX', 'TMUX_PANE', 'STY',
+    # Login-session addresses, agent sockets and the interactive signing terminal.
+    'SSH_CLIENT', 'SSH_CONNECTION', 'SSH_TTY', 'SSH_AUTH_SOCK', 'GPG_TTY',
+    # VS Code's per-session IPC sockets.
+    'VSCODE_IPC_HOOK', 'VSCODE_IPC_HOOK_CLI', 'VSCODE_GIT_IPC_HANDLE',
+}
 IGNORED = {'.git', '.gradle', 'node_modules', 'target', 'build', 'dist', '__pycache__', '.idea', '.vscode'}
 MAVEN_TASKS = {'clean', 'compile', 'test-compile', 'test', 'verify', 'package', 'install', 'dependency:tree', 'flyway:info'}
 GRADLE_TASKS = {'clean', 'classes', 'testClasses', 'test', 'check', 'build', 'assemble', 'dependencies'}
@@ -253,6 +265,9 @@ def build_plan(request):
     tasks = request.get('tasks') or [request.get('task', 'compile')]
     if not isinstance(tasks, list) or not tasks or len(tasks) > 8 or not all(isinstance(t, str) for t in tasks):
         raise ValueError('tasks must be a nonempty list of at most eight task names')
+    if tool == 'gradle' and 'migration-status' in tasks:
+        raise ValueError("Flyway migration status via the build tool is supported only for Maven (flyway:info). "
+                         "For Gradle, run the application's configured flywayInfo task manually.")
     tasks = [ALIASES[tool].get(task, task) for task in tasks]
     allowed = MAVEN_TASKS if tool == 'maven' else GRADLE_TASKS
     if any(task not in allowed for task in tasks):
@@ -271,6 +286,9 @@ def build_plan(request):
         raise ValueError('testClass must be a qualified class name, optionally #method')
     if test_class and 'test' not in tasks:
         raise ValueError('testClass requires the test task')
+    if test_class and tool == 'gradle' and info['modules'] and not module:
+        raise ValueError('For testClass in a multi-project Gradle build, specify the module containing the test. '
+                         'Gradle applies --tests to each selected test task and can fail in an unrelated project.')
     wrapper = info['wrapper']
     if wrapper:
         command = [wrapper] if os.access(wrapper, os.X_OK) else ['sh', wrapper]
@@ -286,7 +304,7 @@ def build_plan(request):
         if module:
             command += ['-pl', module, '-am']
         if test_class:
-            command += ['-Dtest=' + test_class]
+            command += ['-Dtest=' + test_class, '-Dsurefire.failIfNoSpecifiedTests=false']
     else:
         command += ['--console=plain', '--no-daemon', *[(':' + module.replace('/', ':') + ':' if module else '') + task for task in tasks]]
         if 'test' in tasks:
@@ -323,21 +341,47 @@ def relevant(path, root):
     return path.suffix.lower() not in ('.md', '.rst', '.adoc')
 
 
-def fingerprint(root):
+def git_ignored_paths(root):
+    # Only untracked entries; --directory can prune entire ignored output trees.
+    # Inspect the repository containing root even when launched by a different repo's hook.
+    git_env = os.environ.copy()
+    for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'):
+        git_env.pop(name, None)
+    try:
+        with tempfile.TemporaryFile() as listing:
+            subprocess.run(['git', '-c', 'core.fsmonitor=false', 'ls-files', '-z', '--others', '--ignored',
+                            '--exclude-standard', '--directory', '--', '.'], cwd=root, env=git_env, stdout=listing,
+                           stderr=subprocess.DEVNULL, check=True, timeout=2)
+            if listing.tell() > 8 * 1024 * 1024:
+                return set()
+            listing.seek(0)
+            paths = listing.read()
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if paths.count(b'\0') > 50000:
+        return set()
+    return {root / os.fsdecode(path) for path in paths.split(b'\0') if path}
+
+
+def fingerprint_snapshot(root):
     root = Path(root)
     digest = hashlib.sha256(Path(__file__).read_bytes())
     count, total = 0, 0
-    environment = {key: value for key, value in os.environ.items() if key not in INVOCATION_ENV}
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in INVOCATION_ENV and not key.startswith(INVOCATION_PREFIXES)}
+    ignored = git_ignored_paths(root)
+    files = {}
     def walk_error(error):
         raise error
     for folder, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
+        directories[:] = sorted(d for d in directories if Path(folder) / d not in ignored
+                                and not ignored_directory(Path(folder) / d, root))
         for name in directories:
-            if not ignored_directory(Path(folder) / name, root) and (Path(folder) / name).is_symlink():
+            if (Path(folder) / name).is_symlink():
                 raise ValueError(f'Cannot fingerprint symlinked build directory: {Path(folder) / name}')
-        directories[:] = sorted(d for d in directories if not ignored_directory(Path(folder) / d, root) and not (Path(folder) / d).is_symlink())
         for name in sorted(filenames):
             path = Path(folder) / name
-            if not relevant(path, root):
+            if path in ignored or not relevant(path, root):
                 continue
             if path.is_symlink():
                 # Avoid treating uninspected external sources as verified.
@@ -349,19 +393,25 @@ def fingerprint(root):
                 raise ValueError('Build input fingerprint exceeds safety limit; verification will run without reuse')
             with path.open('rb') as source:
                 content = source.read(128 * 1024 * 1024 - total + 1)
-            digest.update((metadata.st_mode & 0o777).to_bytes(8, 'big'))
             total += len(content)
             count += 1
             if total > 128 * 1024 * 1024 or count > 50000:
                 raise ValueError('Build input fingerprint exceeds safety limit; verification will run without reuse')
-            relative = path.relative_to(root).as_posix().encode()
+            relative = path.relative_to(root).as_posix()
             for variable in re.findall(rb'\$\{([A-Za-z_][A-Za-z0-9_]*)', content):
                 key = variable.decode()
                 environment[key] = os.environ.get(key)
-            digest.update(len(relative).to_bytes(8, 'big') + relative)
-            digest.update(len(content).to_bytes(8, 'big') + content)
+            file_digest = hashlib.sha256(content)
+            file_digest.update(stat.S_IMODE(metadata.st_mode).to_bytes(2, 'big'))
+            files[relative] = file_digest.digest()
+            encoded_path = os.fsencode(relative)
+            digest.update(len(encoded_path).to_bytes(8, 'big') + encoded_path + files[relative])
     digest.update(json.dumps(environment, sort_keys=True).encode())
-    return digest.hexdigest()
+    return digest.hexdigest(), files
+
+
+def fingerprint(root):
+    return fingerprint_snapshot(root)[0]
 
 
 def private_dir(folder):
@@ -445,35 +495,48 @@ def acquire(folder, deadline):
         raise
 
 
+def build_descendants(ids):
+    # The CLI shares the build's process group so MCP can cancel both. Signal
+    # only the build tree, including reparented members of a dedicated MCP group.
+    try:
+        listing = subprocess.run(['ps', '-eo', 'pid=,ppid=,pgid='], capture_output=True, text=True, timeout=2,
+                                 check=True)
+    except (OSError, subprocess.SubprocessError):
+        return ids  # A failed rescan must still escalate all previously identified processes.
+    rows = [tuple(map(int, line.split())) for line in listing.stdout.splitlines()]
+    if os.getsid(0) == os.getpid():
+        ids.update(pid for pid, _, group in rows if group == os.getpid() and pid != os.getpid())
+    while True:
+        children = {pid for pid, parent, _ in rows if parent in ids}
+        if children <= ids:
+            return ids
+        ids.update(children)
+
+
 def terminate(process, own_group):
-    if own_group:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    else:
-        # CLI must remain in its caller's group. Kill its build descendants only.
-        try:
-            listing = subprocess.run(['ps', '-eo', 'pid=,ppid=,pgid='], capture_output=True, text=True, timeout=2).stdout
-            rows = [tuple(map(int, line.split())) for line in listing.splitlines() if len(line.split()) == 3]
-            pairs = [(pid, parent) for pid, parent, group in rows]
-            ids = {process.pid}
-            if os.getpgrp() == os.getpid():
-                ids |= {pid for pid, parent, group in rows if group == os.getpgrp() and pid != os.getpid()}
-            while True:
-                children = {pid for pid, parent in pairs if parent in ids}
-                if children <= ids:
-                    break
-                ids |= children
-            for pid in sorted(ids, reverse=True):
+    ids = {process.pid}
+    try:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if own_group:
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    os.killpg(process.pid, sig)
                 except ProcessLookupError:
-                    pass
-        finally:
-            if process.poll() is None:
-                process.kill()
-    process.wait()
+                    break
+            else:
+                # Keep first-pass PIDs if the leader exits during the grace period.
+                for pid in sorted(build_descendants(ids), reverse=True):
+                    try:
+                        os.kill(pid, sig)
+                    except ProcessLookupError:
+                        pass
+            if sig == signal.SIGTERM:
+                # Allow cleanup even when the leader exits before its children.
+                # Stay within the MCP host's one-second escalation window.
+                time.sleep(.75)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
 
 
 def read_regular(path, limit):
@@ -507,6 +570,8 @@ def parent_death_signal():
     prctl = ctypes.CDLL(None, use_errno=True).prctl
     parent = os.getpid()
     def apply():
+        # Before exec the child still has the runtime's deferred cancellation handler.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
         prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
         if os.getppid() != parent:
             os.kill(os.getpid(), signal.SIGTERM)
@@ -558,7 +623,29 @@ def test_report_snapshot(root, module_roots=None):
     return reports
 
 
-def run_build(request, own_process_group=False):
+def report_has_executed_tests(content):
+    """Require positive execution evidence before accepting a filtered build."""
+    try:
+        reject_doctype(content)
+        document = ET.fromstring(content)
+        tag = document.tag.rsplit('}', 1)[-1]
+        if tag not in ('testsuite', 'testsuites'):
+            return False
+        suites = [document] if tag == 'testsuite' else document.findall('{*}testsuite')
+        while suites:
+            suite = suites.pop()
+            suites.extend(suite.findall('{*}testsuite'))
+            if 'tests' in suite.attrib:
+                if 0 <= int(suite.get('skipped', 0)) < int(suite.get('tests')):
+                    return True
+            elif any(case.find('{*}skipped') is None for case in suite.findall('{*}testcase')):
+                return True
+    except (ET.ParseError, xml.parsers.expat.ExpatError, ValueError):
+        pass  # Malformed reports cannot establish a match; MCP reports parse errors.
+    return False
+
+
+def run_build(request, own_process_group=False, *, handle_cancellation=False):
     plan = build_plan(request)
     timeout = request.get('timeoutMs', 300000)
     limit = request.get('maxOutputBytes', 4 * 1024 * 1024)
@@ -575,10 +662,11 @@ def run_build(request, own_process_group=False):
             raise ValueError('collectTestReports requires only the test task')
         report_root = next((m['root'] for m in plan['modules'] if m['path'] == plan['module']), plan['root'])
         report_modules = [m['root'] for m in plan['modules']]
-        reports_before = test_report_snapshot(report_root, report_modules) if collect_reports else {}
+        inspect_reports = collect_reports or plan['testClass']
+        reports_before = test_report_snapshot(report_root, report_modules) if inspect_reports else {}
         cache_diagnostic = None
         try:
-            before = fingerprint(plan['root'])
+            before, before_files = fingerprint_snapshot(plan['root'])
         except (OSError, ValueError) as error:
             before, cache_diagnostic = None, str(error)
         state = state_read(folder)
@@ -597,17 +685,25 @@ def run_build(request, own_process_group=False):
         outputs = {'stdout': bytearray(), 'stderr': bytearray()}
         timed_out, too_large, used = False, False, 0
         previous_handlers, process, selector = {}, None, None
+        terminated = False
+        cancellation = None
         try:
-            if own_process_group:
-                # Installed before the child exists: an earlier signal cannot orphan it.
-                # SIGHUP covers a closed terminal; the build is outside the caller's session.
+            if own_process_group or handle_cancellation:
+                # If interrupted inside Popen, first obtain the child handle. A
+                # second host signal must not interrupt cleanup of the first one.
                 def interrupted(signum, frame):
-                    raise BuildCancelled(f'Build cancelled by signal {signum}')
+                    nonlocal cancellation
+                    if cancellation is None:
+                        cancellation = BuildCancelled(f'Build cancelled by signal {signum}')
+                        if process is not None:
+                            raise cancellation
                 for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                     previous_handlers[signum] = signal.signal(signum, interrupted)
             process = subprocess.Popen(plan['command'], cwd=plan['root'], stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=own_process_group,
                                        preexec_fn=parent_death_signal() if own_process_group else None)
+            if cancellation is not None:
+                raise cancellation
             selector = selectors.DefaultSelector()
             for name in outputs:
                 selector.register(getattr(process, name), selectors.EVENT_READ, name)
@@ -628,16 +724,18 @@ def run_build(request, own_process_group=False):
                         break
                 if too_large:
                     break
-            if timed_out or too_large:
-                terminate(process, own_process_group)
-            else:
+            if not timed_out and not too_large:
                 try:
                     process.wait(timeout=max(.001, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    terminate(process, own_process_group)
+            # A hook owns the group even after the leader exits. Finish cleanup
+            # before taking the final fingerprint, including writes by TERM handlers.
+            if timed_out or too_large or own_process_group:
+                terminate(process, own_process_group)
+                terminated = True
             try:
-                after = fingerprint(plan['root'])
+                after, after_files = fingerprint_snapshot(plan['root'])
             except (OSError, ValueError) as error:
                 after, cache_diagnostic = None, str(error)
             ok = process.returncode == 0 and not timed_out and not too_large
@@ -645,23 +743,34 @@ def run_build(request, own_process_group=False):
                 state['verifiedScopes'] = {scope: after}
                 state_write(folder, state)
             report_result = {}
-            if collect_reports:
+            if inspect_reports:
                 reports_after = test_report_snapshot(report_root, report_modules)
                 fresh = [{'file': file, 'content': value[1]} for file, value in reports_after.items()
                          if reports_before.get(file) != value]
-                report_result = {'testReports': fresh, 'staleReportsIgnored': len(reports_after) - len(fresh),
-                                 'reportScope': report_root}
+                if collect_reports:
+                    report_result = {'testReports': fresh, 'staleReportsIgnored': len(reports_after) - len(fresh),
+                                     'reportScope': report_root}
+                if ok and plan['testClass'] and not any(report_has_executed_tests(r['content']) for r in fresh):
+                    ok = False
+                    report_result['diagnostic'] = f"No tests matched testClass {plan['testClass']} in fresh test reports."
+            inputs_changed = before is not None and after is not None and before != after
+            if inputs_changed:
+                changed = sorted(path for path in before_files.keys() | after_files.keys()
+                                 if before_files.get(path) != after_files.get(path))
+                report_result.update(changedInputs=changed[:20], changedInputsTruncated=len(changed) > 20)
             return dict(plan, **report_result, ok=ok, exitCode=process.returncode, **{name: bytes(value).decode('utf-8', 'replace') for name, value in outputs.items()},
-                        reused=False, durationMs=round((time.monotonic() - start) * 1000), fingerprint=before, inputsChanged=before is not None and after is not None and before != after, cacheable=before is not None and after is not None, cacheDiagnostic=cache_diagnostic, timedOut=timed_out, outputLimitExceeded=too_large)
+                        reused=False, durationMs=round((time.monotonic() - start) * 1000), fingerprint=before, inputsChanged=inputs_changed, cacheable=before is not None and after is not None, cacheDiagnostic=cache_diagnostic, timedOut=timed_out, outputLimitExceeded=too_large)
         finally:
             try:
                 if selector is not None:
                     selector.close()
                 if process is not None:
-                    for name in outputs:
-                        getattr(process, name).close()
-                    if own_process_group or process.poll() is None:
-                        terminate(process, own_process_group)
+                    try:
+                        if not terminated and (own_process_group or process.returncode is None):
+                            terminate(process, own_process_group)
+                    finally:
+                        for name in outputs:
+                            getattr(process, name).close()
             finally:
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
@@ -688,7 +797,7 @@ def main():
         elif action == 'plan':
             result = build_plan(request)
         elif action == 'run':
-            result = run_build(request)
+            result = run_build(request, handle_cancellation=True)
         elif action == 'lint-migrations':
             from sql_lint import lint_migrations
             result = lint_migrations(request.get('migrations'))
