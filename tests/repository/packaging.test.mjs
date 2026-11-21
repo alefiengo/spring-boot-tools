@@ -37,8 +37,18 @@ test('all declared options reach a component and references resolve', () => {
   const options = json('.claude-plugin/plugin.json').userConfig;
   const server = json('.mcp.json').mcpServers['spring-boot'];
   const definition = JSON.stringify(server);
-  for (const name of Object.keys(options)) assert.ok(definition.includes(`\${user_config.${name}}`));
+  // Hooks read CLAUDE_PLUGIN_OPTION_<KEY>: shell-form hooks reject ${user_config.*},
+  // and an unconfigured option is neither substituted nor exported.
+  const hookRuntime = read('hooks/scripts/hook-runtime.py');
+  assert.doesNotMatch(read('hooks/hooks.json'), /user_config/);
+  for (const name of Object.keys(options)) {
+    assert.ok(definition.includes(`\${user_config.${name}}`) || hookRuntime.includes(`CLAUDE_PLUGIN_OPTION_${name.toUpperCase()}`), name);
+  }
   for (const match of definition.matchAll(/\$\{user_config\.(\w+)\}/g)) assert.ok(options[match[1]]);
+  for (const match of hookRuntime.matchAll(/CLAUDE_PLUGIN_OPTION_(\w+)/g)) assert.ok(options[match[1].toLowerCase()], match[0]);
+  for (const option of Object.values(options)) {
+    if (option.options) assert.ok(option.options.includes(option.default));
+  }
   assert.equal(server.env.PROJECT_ROOT, '${CLAUDE_PROJECT_DIR}');
   assert.equal(server.env.SPRING_BOOT_APP_PORT, '${user_config.app_port}');
   // Claude Code resolves ${...} only in stdio command, args and env; it drops
@@ -127,7 +137,7 @@ test('registered components and shared runtime are consistent', () => {
   assert.equal(readdirSync(path.join(root, 'skills')).length, 16);
   assert.ok(!json('.claude-plugin/plugin.json').experimental?.monitors);
   const hooks = json('hooks/hooks.json').hooks;
-  assert.equal(Object.values(hooks).flatMap(entries => entries.flatMap(entry => entry.hooks)).length, 4);
+  assert.equal(Object.values(hooks).flatMap(entries => entries.flatMap(entry => entry.hooks)).length, 5);
   assert.ok(existsSync(path.join(root, 'runtime/project_runtime.py')));
   assert.match(read('hooks/scripts/hook-runtime.py'), /project_runtime/);
   assert.match(read('mcp-server/index.js'), /project_runtime/);
