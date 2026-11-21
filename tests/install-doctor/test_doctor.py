@@ -76,8 +76,8 @@ class DoctorTests(unittest.TestCase):
         if not node:
             self.skipTest('Supported Node required for successful resolution fixture')
         version = subprocess.check_output([node, '--version'], text=True)
-        if tuple(map(int, version.strip().lstrip('v').split('.'))) < (20, 3, 0):
-            self.skipTest('Node >=20.3 required for successful resolution fixture')
+        if tuple(map(int, version.strip().lstrip('v').split('.'))) < (22, 0, 0):
+            self.skipTest('Node >=22.0.0 required for successful resolution fixture')
 
     def mutate_json(self, relative, change):
         path = self.bundle / relative
@@ -117,14 +117,34 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(result[identifier]['status'], 'error')
         self.assertEqual(result['project_discovery']['status'], 'skipped')
 
-    def test_old_node_and_python(self):
-        for name, version in (('node', 'v20.2.9'), ('python', 'Python 3.10.9')):
-            args = type('Args', (), dict(plugin_root=str(self.bundle), workspace=str(self.app),
-                                         node=sys.executable, python=sys.executable, project=None))()
-            with patch.object(DOCTOR, 'probe', return_value=version):
-                result = DOCTOR.diagnose(args)
-            checks = {check['id']: check for check in result['checks']}
-            self.assertIn('too old', checks[name]['message'])
+    def test_node_version_boundary(self):
+        node = self.base / 'node'
+        for version, exit_code in (('v21.7.3', 1), ('v22.0.0', 0)):
+            with self.subTest(version=version):
+                node.write_text(f'''#!/bin/sh
+if [ "$1" = "--version" ]; then
+    echo "{version}"
+else
+    echo '{{"missing": []}}'
+fi
+''')
+                node.chmod(0o755)
+                checks = self.run_doctor('--node', str(node), expected=exit_code)
+                if exit_code:
+                    self.assertEqual(checks['node']['status'], 'error')
+                    self.assertIn(f'{version} is too old; need >= 22.0.0', checks['node']['message'])
+                else:
+                    self.assertEqual(checks['node']['status'], 'ok')
+                    self.assertEqual(checks['node']['version'], version)
+                    self.assertEqual(checks['dependencies']['status'], 'ok')
+
+    def test_old_python(self):
+        args = type('Args', (), dict(plugin_root=str(self.bundle), workspace=str(self.app),
+                                     node=sys.executable, python=sys.executable, project=None))()
+        with patch.object(DOCTOR, 'probe', side_effect=['v22.0.0', 'Python 3.10.9', '{"missing": []}']):
+            result = DOCTOR.diagnose(args)
+        checks = {check['id']: check for check in result['checks']}
+        self.assertIn('Python 3.10.9 is too old; need >= 3.11.0', checks['python']['message'])
 
     def test_missing_dependency(self):
         self.needs_node()

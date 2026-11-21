@@ -121,7 +121,7 @@ def diagnose(args):
         require(version >= minimum, f'{name} {output} is too old; need >= {".".join(map(str, minimum))}')
         return {'executable': selected, 'version': output}
 
-    node = check('node', lambda: executable(args.node, (20, 3, 0)))
+    node = check('node', lambda: executable(args.node, (22, 0, 0)))
     python = check('python', lambda: executable(args.python, (3, 11, 0)))
 
     def bundle_file(relative, directory=False):
@@ -202,9 +202,9 @@ def diagnose(args):
                 'Package dependencies must be a nonempty object of version strings')
         names = [*declarations, '@modelcontextprotocol/server/stdio']
         # Dependencies are installed at the plugin root: resolve from <root>/package.json
-        # so a leftover mcp-server/node_modules cannot satisfy the check. Node 20.3
-        # requires the flag both for import.meta.resolve and its parent URL argument.
-        # Resolve ESM import conditions, then stat: newer Node may return file URLs
+        # so a leftover mcp-server/node_modules cannot satisfy the check.
+        # --experimental-import-meta-resolve enables the explicit parent URL.
+        # Resolve ESM import conditions, then stat: Node may return file URLs
         # even when their target is missing. Only builtins load.
         code = """import {statSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
