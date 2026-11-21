@@ -1,6 +1,6 @@
 # Security Policy
 
-Only the latest release (currently 0.4.x) receives security fixes; earlier
+Only the latest release (currently 0.5.x) receives security fixes; earlier
 releases are not patched. Use the current plugin and install dependencies from
 its lockfile. Reports are handled on a best-effort basis by the maintainer.
 

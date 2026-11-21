@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## [0.5.0](https://github.com/alefiengo/spring-boot-tools/compare/v0.4.0...v0.5.0)
 
-Entries marked **Behavior change** alter visible results.
+Breaking changes: Node.js 22 or newer is required, and the static endpoint
+inventory returns `version: null` for paths without a `/v<N>` segment (see
+MCP server). Entries marked **Behavior change** alter visible results.
 
 ### Hooks
 
