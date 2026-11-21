@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Project discovery and coordinated builds, shared by hooks and MCP (stdlib only).
 
-CLI accepts a JSON object on stdin and returns JSON on stdout. Build subprocesses
-inherit the CLI process group so an MCP cancellation terminates the whole group.
+CLI accepts a JSON object on stdin and returns JSON on stdout. Builds under MCP
+inherit its dedicated CLI process group so host cancellation reaches the whole group.
 """
 import ctypes
 import errno
@@ -43,6 +43,10 @@ INVOCATION_ENV = {
     'SSH_CLIENT', 'SSH_CONNECTION', 'SSH_TTY', 'SSH_AUTH_SOCK', 'GPG_TTY',
     # VS Code's per-session IPC sockets.
     'VSCODE_IPC_HOOK', 'VSCODE_IPC_HOOK_CLI', 'VSCODE_GIT_IPC_HANDLE',
+    # Agent identity and its noninteractive Git editor and Corepack auto-pin policy.
+    'CLAUDECODE', 'AI_AGENT', 'GIT_EDITOR', 'COREPACK_ENABLE_AUTO_PIN',
+    # WSL interop socket and Warp's terminal-session identifier.
+    'WSL_INTEROP', 'WARP_TERMINAL_SESSION_UUID',
 }
 IGNORED = {'.git', '.gradle', 'node_modules', 'target', 'build', 'dist', '__pycache__', '.idea', '.vscode'}
 MAVEN_TASKS = {'clean', 'compile', 'test-compile', 'test', 'verify', 'package', 'install', 'dependency:tree', 'flyway:info'}
@@ -316,11 +320,17 @@ def build_plan(request):
     return dict(info, command=command, tasks=tasks, profiles=profiles, module=module, testClass=request.get('testClass'))
 
 
+def protected_build_input(relative):
+    return (not {'src', '.mvn', 'gradle'}.isdisjoint(relative.parts)
+            or relative.name in ('pom.xml', 'gradle.properties', *WRAPPERS, 'mvnw.cmd', 'gradlew.bat')
+            or relative.name.startswith(('build.gradle', 'settings.gradle')))
+
+
 def ignored_directory(path, root):
     relative = path.relative_to(root)
     # A package may be named build, target, docs or node_modules. None of those
     # names excludes source files when they occur inside a source tree.
-    if 'src' in relative.parts or path.name not in IGNORED:
+    if path.name not in IGNORED or protected_build_input(relative):
         return False
     if path.name in ('target', 'build', 'dist'):
         if build_file(path) or has_settings(path):
@@ -332,7 +342,7 @@ def ignored_directory(path, root):
 
 def relevant(path, root):
     relative = path.relative_to(root)
-    if 'src' in relative.parts:
+    if protected_build_input(relative):
         return True
     if any(ignored_directory(root / Path(*relative.parts[:index + 1]), root) for index in range(len(relative.parts) - 1)):
         return False
@@ -342,14 +352,21 @@ def relevant(path, root):
 
 
 def git_ignored_paths(root):
-    # Only untracked entries; --directory can prune entire ignored output trees.
+    # An enclosing repository may ignore a whole untracked project. Its ignore
+    # rules apply only when its index recognizes the root build files and wrappers.
     # Inspect the repository containing root even when launched by a different repo's hook.
     git_env = os.environ.copy()
     for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR'):
         git_env.pop(name, None)
+    anchors = [name for name in (*BUILD_FILES, *SETTINGS_FILES, *WRAPPERS) if (root / name).is_file()]
+    if not anchors:
+        return set()
+    ls_files = ['git', '-c', 'core.fsmonitor=false', 'ls-files']
     try:
+        subprocess.run([*ls_files, '--error-unmatch', '--', *anchors], cwd=root, env=git_env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=2)
         with tempfile.TemporaryFile() as listing:
-            subprocess.run(['git', '-c', 'core.fsmonitor=false', 'ls-files', '-z', '--others', '--ignored',
+            subprocess.run([*ls_files, '-z', '--others', '--ignored',
                             '--exclude-standard', '--directory', '--', '.'], cwd=root, env=git_env, stdout=listing,
                            stderr=subprocess.DEVNULL, check=True, timeout=2)
             if listing.tell() > 8 * 1024 * 1024:
@@ -360,7 +377,8 @@ def git_ignored_paths(root):
         return set()
     if paths.count(b'\0') > 50000:
         return set()
-    return {root / os.fsdecode(path) for path in paths.split(b'\0') if path}
+    ignored = {root / os.fsdecode(path) for path in paths.split(b'\0') if path}
+    return set() if root in ignored else ignored
 
 
 def fingerprint_snapshot(root):
@@ -374,14 +392,26 @@ def fingerprint_snapshot(root):
     def walk_error(error):
         raise error
     for folder, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
-        directories[:] = sorted(d for d in directories if Path(folder) / d not in ignored
-                                and not ignored_directory(Path(folder) / d, root))
-        for name in directories:
-            if (Path(folder) / name).is_symlink():
-                raise ValueError(f'Cannot fingerprint symlinked build directory: {Path(folder) / name}')
+        folder = Path(folder)
+        ignored_folder = folder in ignored or not ignored.isdisjoint(folder.parents)
+        # Git can collapse an ignored module into one directory entry. Descend
+        # to retain its sources and configuration while skipping other ignored files.
+        keep = []
+        for name in sorted(directories):
+            path = folder / name
+            if ignored_directory(path, root):
+                continue
+            if path.is_symlink():
+                if (ignored_folder or path in ignored) and not protected_build_input(path.relative_to(root)):
+                    continue
+                raise ValueError(f'Cannot fingerprint symlinked build directory: {path}')
+            keep.append(name)
+        directories[:] = keep
         for name in sorted(filenames):
-            path = Path(folder) / name
-            if path in ignored or not relevant(path, root):
+            path = folder / name
+            if (ignored_folder or path in ignored) and not protected_build_input(path.relative_to(root)):
+                continue
+            if not relevant(path, root):
                 continue
             if path.is_symlink():
                 # Avoid treating uninspected external sources as verified.
@@ -495,17 +525,19 @@ def acquire(folder, deadline):
         raise
 
 
-def build_descendants(ids):
-    # The CLI shares the build's process group so MCP can cancel both. Signal
-    # only the build tree, including reparented members of a dedicated MCP group.
+def build_descendants(process, group, timeout):
+    # A fresh snapshot can identify reparented members by their dedicated group.
+    # Keep ps outside that group so a poll cannot count itself as a survivor.
     try:
-        listing = subprocess.run(['ps', '-eo', 'pid=,ppid=,pgid='], capture_output=True, text=True, timeout=2,
-                                 check=True)
+        listing = subprocess.run(['ps', '-eo', 'pid=,ppid=,pgid=,stat='], capture_output=True, text=True,
+                                 timeout=timeout, start_new_session=True, check=True)
     except (OSError, subprocess.SubprocessError):
-        return ids  # A failed rescan must still escalate all previously identified processes.
-    rows = [tuple(map(int, line.split())) for line in listing.stdout.splitlines()]
-    if os.getsid(0) == os.getpid():
-        ids.update(pid for pid, _, group in rows if group == os.getpid() and pid != os.getpid())
+        return None
+    rows = [tuple(map(int, (pid, parent, pgid))) for pid, parent, pgid, status in
+            (line.split() for line in listing.stdout.splitlines()) if not status.startswith('Z')]
+    runtime_pid = os.getpid()
+    ids = {pid for pid, parent, pgid in rows if pid != runtime_pid and
+           (pgid == group or (process.returncode is None and pid == process.pid and parent == runtime_pid))}
     while True:
         children = {pid for pid, parent, _ in rows if parent in ids}
         if children <= ids:
@@ -513,26 +545,37 @@ def build_descendants(ids):
         ids.update(children)
 
 
+def signal_members(members, sig):
+    for pid in sorted(members, reverse=True):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+
 def terminate(process, own_group):
-    ids = {process.pid}
+    group = process.pid if own_group else os.getpid()
     try:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            if own_group:
-                try:
-                    os.killpg(process.pid, sig)
-                except ProcessLookupError:
-                    break
+        if own_group:
+            os.killpg(group, signal.SIGTERM)
+        else:
+            members = build_descendants(process, group, 2)
+            if members is None:
+                process.terminate()
             else:
-                # Keep first-pass PIDs if the leader exits during the grace period.
-                for pid in sorted(build_descendants(ids), reverse=True):
-                    try:
-                        os.kill(pid, sig)
-                    except ProcessLookupError:
-                        pass
-            if sig == signal.SIGTERM:
-                # Allow cleanup even when the leader exits before its children.
-                # Stay within the MCP host's one-second escalation window.
-                time.sleep(.75)
+                signal_members(members, signal.SIGTERM)
+        deadline = time.monotonic() + .75
+        while (remaining := deadline - time.monotonic()) > 0:
+            if build_descendants(process, group, remaining) == set():
+                return
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
+        if own_group:
+            os.killpg(group, signal.SIGKILL)
+        else:
+            # Any first-pass PID might now belong to another tree.
+            signal_members(build_descendants(process, group, 2) or (), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     finally:
         if process.poll() is None:
             process.kill()
@@ -699,9 +742,12 @@ def run_build(request, own_process_group=False, *, handle_cancellation=False):
                             raise cancellation
                 for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                     previous_handlers[signum] = signal.signal(signum, interrupted)
+            # MCP already supplies a dedicated session. With a shared terminal
+            # group, isolate the build so reparented children remain identifiable.
+            separate_session = own_process_group or os.getsid(0) != os.getpid()
             process = subprocess.Popen(plan['command'], cwd=plan['root'], stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=own_process_group,
-                                       preexec_fn=parent_death_signal() if own_process_group else None)
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=separate_session,
+                                       preexec_fn=parent_death_signal() if separate_session else None)
             if cancellation is not None:
                 raise cancellation
             selector = selectors.DefaultSelector()
@@ -732,7 +778,7 @@ def run_build(request, own_process_group=False, *, handle_cancellation=False):
             # A hook owns the group even after the leader exits. Finish cleanup
             # before taking the final fingerprint, including writes by TERM handlers.
             if timed_out or too_large or own_process_group:
-                terminate(process, own_process_group)
+                terminate(process, separate_session)
                 terminated = True
             try:
                 after, after_files = fingerprint_snapshot(plan['root'])
@@ -767,7 +813,7 @@ def run_build(request, own_process_group=False, *, handle_cancellation=False):
                 if process is not None:
                     try:
                         if not terminated and (own_process_group or process.returncode is None):
-                            terminate(process, own_process_group)
+                            terminate(process, separate_session)
                     finally:
                         for name in outputs:
                             getattr(process, name).close()
