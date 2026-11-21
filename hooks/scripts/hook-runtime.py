@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Shared hook runtime. Python 3 standard library only; never executes input as shell."""
 import collections
+import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -112,6 +114,7 @@ TOKENS = (
 )
 # A next-line YAML value that starts a sequence, mapping, tag, anchor, alias or
 # collection is nested structure, not a plain or quoted scalar.
+DOTENV_SINGLE = re.compile(r"\s*(?:export\s+)?[\w.-]{1,512}\s*=\s*'[^']*'\s*(?:#.*)?$")
 BLOCK_SCALAR = re.compile(r'[|>][-+1-9]{0,2}(?:\s+#.*)?$')
 YAML_NESTED = re.compile(r"(?:-(?:\s|$)|[\w.-]{1,512}\s*:(?:\s|$)|[\"'][^\"']{0,512}[\"']\s*:(?:\s|$)|[?&*|>!{\[%@`])")
 
@@ -228,8 +231,10 @@ def credential_literal(key, scalar, compose, dotenv):
     return literal(value, compose, placeholders=not single)
 
 
-def url_credential(line, compose):
+def url_credential(line, compose, dotenv=False):
     """scheme://user:password@host with a literal password; the user part may be a placeholder."""
+    # dotenv keeps a single-quoted value literally, so its ${VAR} is not interpolated.
+    placeholders = not (dotenv and DOTENV_SINGLE.match(line))
     for match in URL_USERINFO.finditer(line):
         userinfo, depth = match.group(1), 0
         for index, char in enumerate(userinfo):
@@ -238,7 +243,7 @@ def url_credential(line, compose):
             elif char == '}' and depth:
                 depth -= 1
             elif char == ':' and not depth:
-                if literal(userinfo[index + 1:], compose):
+                if literal(userinfo[index + 1:], compose, placeholders):
                     return True
                 break
     return False
@@ -258,17 +263,34 @@ def secret_findings(text, path, compose=False, dotenv=False):
     findings = []
     yaml = path.suffix in ('.yaml', '.yml')
     pending = None  # (indent, name, key, line) of a YAML credential key whose value starts on the next line
+    # (indent, name, key, text, classify) of a credential block scalar awaiting its first content line.
+    # The finding text includes that line, so an edit limited to the block body is new.
+    block = None
     for line in text.splitlines():
         stripped = line.strip()
         comment = line.lstrip().startswith(('#', '!'))
+        indent = len(line) - len(line.lstrip())
+        if block and stripped:
+            key_indent, name, key, block_text, classify = block
+            block = None
+            if indent > key_indent:
+                # Only the first content line is classified; a next-line indicator is classified
+                # like an ordinary scalar, a same-line indicator keeps the conservative finding.
+                if not classify or credential_literal(key, stripped, compose, dotenv):
+                    findings.append((block_text + '\n' + stripped, name))
+                    continue
+            elif not classify:
+                findings.append((block_text, name))
         if pending and stripped and not comment:
-            indent, name, key, key_line = pending
+            key_indent, name, key, key_line = pending
             pending = None
-            if len(line) - len(line.lstrip()) > indent and (
-                    BLOCK_SCALAR.match(stripped)  # like the same-line 'password: |', the indicator itself is flagged
-                    or (not YAML_NESTED.match(stripped) and credential_literal(key, stripped, compose, dotenv))):
-                findings.append((key_line.strip() + '\n' + stripped, name))
-                continue
+            if indent > key_indent:
+                if BLOCK_SCALAR.match(stripped):
+                    block = (key_indent, name, key, key_line.strip() + '\n' + stripped, True)
+                    continue
+                if not YAML_NESTED.match(stripped) and credential_literal(key, stripped, compose, dotenv):
+                    findings.append((key_line.strip() + '\n' + stripped, name))
+                    continue
         known_token = token_finding(line)
         if comment:
             # Commented-out values are examples, but a well-known token is leaked either way.
@@ -296,17 +318,24 @@ def secret_findings(text, path, compose=False, dotenv=False):
             if not key.endswith(SECRET_SUFFIXES):
                 continue  # policy flags, credential names and token URLs are not credentials
             if yaml and not flow and not raw.strip():
-                pending = (len(line) - len(line.lstrip()), name, key, line)
+                pending = (indent, name, key, line)
                 continue
+            if yaml and not flow and BLOCK_SCALAR.match(raw.strip()):
+                block = (indent, name, key, stripped, False)
+                break
             if not credential_literal(key, scalar, compose, dotenv):
                 continue
             found = name
             break  # findings are compared per line
-        if not found and url_credential(line, compose):
+        if block and block[3] == stripped:
+            continue  # reported with the block's first content line
+        if not found and url_credential(line, compose, dotenv):
             found = 'credentials in URL'
         found = found or known_token
         if found:
             findings.append((stripped, found))
+    if block and not block[4]:
+        findings.append((block[3], block[1]))  # same-line indicator without content
     return findings
 
 
@@ -453,6 +482,8 @@ SESSION_BASELINES = 64
 BASELINE_NAME = re.compile(r'[0-9a-f]{64}\.json')
 STALE_TEMPORARY_SECONDS = 3600
 MAX_RECORD_BYTES = 4096
+RECORD_LOCK_SECONDS = 5
+RECORD_MODES = ('verify', 'compile')
 # Exported only to some hook events; it must not make SessionStart and Stop fingerprints differ.
 EVENT_ONLY_ENV = ('CLAUDE_ENV_FILE',)
 MAX_CHANGED_LISTED = 10
@@ -513,7 +544,10 @@ def read_record(path):
         if os.path.lexists(path):
             raise ValueError(f'Unusable hook state entry: {path}')
         return None
-    value = json.loads(content[1])
+    try:
+        value = json.loads(content[1])  # UnicodeDecodeError is a ValueError
+    except (ValueError, TypeError, RecursionError) as error:
+        raise ValueError(f'Unusable hook state entry: {path}') from error
     if not isinstance(value, dict):
         raise ValueError(f'Unusable hook state entry: {path}')
     return value
@@ -547,26 +581,95 @@ def publish_baseline(path, session, value):
         os.unlink(temporary)
 
 
-def record_unverified(root, mode, value=None):
-    """Remember, per project, the inputs of the last Stop check that failed or blocked."""
-    try:
-        value = value or session_fingerprint(root)
-        temporary = write_private(state_dir(root), 'unverified-', {'fingerprint': value, 'mode': mode})
+@contextlib.contextmanager
+def record_lock(root):
+    """Exclusive, bounded lock serializing the failure record's read-modify-write."""
+    handle = os.open(state_dir(root) / 'stop-unverified.lock', os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(handle, 'a') as stream:
+        deadline = time.monotonic() + RECORD_LOCK_SECONDS
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Timed out waiting for the Stop failure record lock')
+                time.sleep(.02)
+        yield  # closing the stream releases the lock
+
+
+def recorded_failures(root):
+    """{mode: {'fingerprint', 'at'}} of failed or blocked Stop checks; ValueError when unusable."""
+    record = read_record(unverified_file(root))
+    if record is None:
+        return {}
+    entries = record.get('failures')
+    if not isinstance(entries, dict):
+        raise ValueError('Unusable Stop failure record')
+    for mode, entry in entries.items():
+        at = entry.get('at') if isinstance(entry, dict) else None
+        if (mode not in RECORD_MODES or not isinstance(entry, dict) or not valid_fingerprint(entry.get('fingerprint'))
+                or isinstance(at, bool) or not isinstance(at, (int, float))):
+            raise ValueError('Unusable Stop failure record')
+    return entries
+
+
+def update_failures(root, update, unlocked_fallback=False):
+    """Apply update(entries or None when unusable) -> entries or None (leave as is)."""
+    def apply():
         try:
-            os.replace(temporary, unverified_file(root))
+            entries = recorded_failures(root)
+        except ValueError:
+            entries = None
+        entries = update(entries)
+        if entries is None:
+            return
+        path = unverified_file(root)
+        if not entries:
+            path.unlink(missing_ok=True)
+            return
+        temporary = write_private(state_dir(root), 'unverified-', {'failures': entries})
+        try:
+            os.replace(temporary, path)
         except OSError:
             os.unlink(temporary)
             raise
-    except (OSError, ValueError):
-        pass  # without a record a later baseline cannot match an unknown tree
-
-
-def clear_unverified(root, mode):
-    """A passing verify clears any failure; a passing compile clears only a compile failure."""
     try:
-        path = unverified_file(root)
-        if mode == 'verify' or (read_record(path) or {}).get('mode') == mode:
-            path.unlink(missing_ok=True)  # also drops an unusable entry, which never allows a skip
+        with record_lock(root):
+            return apply()
+    except TimeoutError:
+        if not unlocked_fallback:
+            raise
+    apply()
+
+
+def record_failure(root, mode, value=None):
+    """Remember, per project and mode, the inputs of the last Stop check that failed or blocked.
+
+    A compile result never touches the verify entry. An unusable record is kept:
+    it already prevents every skip. Without the lock the failure is still
+    written, since losing it could allow a skip."""
+    def update(entries):
+        if entries is None:
+            return None
+        return dict(entries, **{mode: {'fingerprint': value, 'at': time.time()}})
+    try:
+        value = value or session_fingerprint(root)
+        update_failures(root, update, unlocked_fallback=True)
+    except (OSError, ValueError):
+        pass  # without a fingerprint a later baseline cannot match this tree either
+
+
+def clear_failures(root, mode, started):
+    """A passing verify clears both modes, a passing compile only compile; entries recorded
+    after this build started (by a concurrent Stop) are kept. Without the lock, nothing is cleared."""
+    def update(entries):
+        if entries is None:
+            return {} if mode == 'verify' else None  # a passing verify drops an unusable record
+        return {name: entry for name, entry in entries.items()
+                if not ((mode == 'verify' or name == mode) and entry['at'] < started)}
+    try:
+        update_failures(root, update)
     except (OSError, ValueError):
         pass
 
@@ -635,10 +738,11 @@ def unchanged_since_session_start(data, root):
         current = session_fingerprint(root)
         if current != stored['fingerprint']:
             return False
-        failed = read_record(unverified_file(root))
-        return failed is None or (valid_fingerprint(failed.get('fingerprint')) and failed['fingerprint'] != current)
-    except (OSError, ValueError):
-        return False
+        with record_lock(root):
+            failures = recorded_failures(root)
+        return all(entry['fingerprint'] != current for entry in failures.values())
+    except (OSError, ValueError, TypeError, RecursionError):
+        return False  # an unusable or locked record never allows a skip
 
 
 def changed_inputs(result):
@@ -673,21 +777,22 @@ def build(event, data):
         return finish()
     if unchanged_since_session_start(data, info['root']):
         return finish()
+    started = time.time()
     try:
         result = run_build({'projectRoot': info['root'], 'task': mode, 'timeoutMs': timeout}, own_process_group=True)
     except BuildCancelled as error:
         notes.insert(0, str(error))
         return finish()
     except (OSError, ValueError, KeyError, TimeoutError) as error:
-        record_unverified(info['root'], mode)
+        record_failure(info['root'], mode)
         notes.insert(0, str(error))
         return finish()
     if result['ok'] and not result.get('inputsChanged'):
-        clear_unverified(info['root'], mode)
+        clear_failures(info['root'], mode, started)
     else:
         # The tree a later session starts from: before the build unless the build changed it.
         before = result.get('fingerprint')
-        record_unverified(info['root'], mode, None if result.get('inputsChanged') or not valid_fingerprint(before) else before)
+        record_failure(info['root'], mode, None if result.get('inputsChanged') or not valid_fingerprint(before) else before)
     if not result['ok']:
         detail = 'timed out' if result['timedOut'] else ('exceeded output limit' if result['outputLimitExceeded'] else f"exit {result['exitCode']}")
         output = result['stdout'] + result['stderr']

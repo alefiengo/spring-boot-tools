@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run real hooks with JSON and isolated projects; builds use mock wrappers only."""
 from contextlib import redirect_stdout
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -149,9 +150,32 @@ class HookTests(unittest.TestCase):
                 self.assertIsNone(self.invoke(self.root / name, text))
         yaml = self.root / 'application.yml'
         # A block scalar indicator on the line after the key is flagged like 'password: |'.
-        for text in ('password:\n  |\n    hunter2', 'spring:\n  password:\n    >-\n      hunter2', 'secret: |\n  hunter2'):
+        for text in ('password:\n  |\n    hunter2', 'spring:\n  password:\n    >-\n      hunter2', 'secret: |\n  hunter2',
+                     'secret: |', 'secret: >-\n  ${JWT_SECRET}'):
             with self.subTest(text=text):
                 self.deny(self.invoke(yaml, text))
+        # Next-line block content is classified like an ordinary scalar.
+        for text in ('password:\n  |\n    ${DB_PASSWORD}', 'password:\n  >-\n    <password>', 'password:\n  |\nother: x'):
+            with self.subTest(text=text):
+                self.assertIsNone(self.invoke(yaml, text))
+        # Editing only the body of an existing block is a new literal.
+        for existing, old, new in (('password:\n  |\n    ${DB_PASSWORD}\n', '${DB_PASSWORD}', 'hunter2'),
+                                   ('password:\n  |\n    first-literal\n', 'first-literal', 'second-literal'),
+                                   ('secret: |\n  first-literal\n', 'first-literal', 'second-literal')):
+            with self.subTest(existing=existing):
+                yaml.write_text(existing)
+                self.deny(self.invoke(yaml, tool_input={'old_string': old, 'new_string': new}))
+                self.assertIsNone(self.invoke(yaml, tool_input={'old_string': old, 'new_string': old}))
+        yaml.unlink()
+        # dotenv single quotes are literal for URL credentials as well.
+        env = self.root / '.env'
+        self.deny(self.invoke(env, "DB_URL='postgres://app:${DB_PASSWORD}@db/app'"), decision='ask')
+        self.deny(self.invoke(self.root / '.env.example', "export DB_URL='postgres://app:${DB_PASSWORD}@db/app' # x"))
+        for text in ('DB_URL="postgres://app:${DB_PASSWORD}@db/app"', 'DB_URL=postgres://app:${DB_PASSWORD}@db/app'):
+            with self.subTest(text=text):
+                self.assertIsNone(self.invoke(env, text))
+        self.assertIsNone(self.invoke(self.root / 'docker-compose.yml',
+                                      "services:\n  app:\n    environment:\n      DB_URL: 'postgres://app:${DB_PASSWORD}@db/app'"))
         # Resource references are exempt on the next line as on the same line.
         for text in ('credentials: classpath:creds.json', 'credentials:\n  classpath:creds.json',
                      'jwt:\n  private-key:\n    file:/etc/keys/jwt.pem', 'signing-key:\n  "classpath:jwt.key"'):
@@ -729,11 +753,16 @@ class HookTests(unittest.TestCase):
         record = state_path(self.root) / 'stop-unverified.json'
         skip = lambda: hooks.unchanged_since_session_start({'session_id': 'second'}, str(self.root))
         self.assertTrue(skip())
-        for content in ('not json', '[]', '{"fingerprint": "short"}', '{"a": "' + 'x' * 5000 + '"}'):
+        valid = {'failures': {'verify': {'fingerprint': 'd' * 64, 'at': 1.0}}}
+        for content in ('not json', '[]', '{"fingerprint": "short"}', '{"a": "' + 'x' * 5000 + '"}', b'\xff\xfe',
+                        '[' * 2000 + ']' * 2000, '{"failures": ' + '{"a": ' * 300 + '1' + '}' * 301,
+                        json.dumps({'fingerprint': 'd' * 64, 'mode': 'verify'}),
+                        json.dumps({'failures': {'verify': {'fingerprint': 'd' * 64, 'at': True}}}),
+                        json.dumps({'failures': {'test': {'fingerprint': 'd' * 64, 'at': 1}}})):
             with self.subTest(record=content[:20]):
-                record.write_text(content)
+                record.write_bytes(content) if isinstance(content, bytes) else record.write_text(content)
                 self.assertFalse(skip())
-        record.write_text(json.dumps({'fingerprint': 'd' * 64, 'mode': 'verify'}))
+        record.write_text(json.dumps(valid))
         self.assertTrue(skip())
         record.unlink()
         os.mkfifo(record)
@@ -741,6 +770,109 @@ class HookTests(unittest.TestCase):
         record.unlink()
         record.mkdir()
         self.assertFalse(skip())
+        record.rmdir()
+        # A held record lock never allows a skip.
+        self.assertTrue(skip())
+        with open(state_path(self.root) / 'stop-unverified.lock', 'a') as lock, \
+                mock.patch.object(hooks, 'RECORD_LOCK_SECONDS', .2):
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertFalse(skip())
+
+    def test_failure_record_modes_and_ordering(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        control = self.controlled_wrapper()
+        record = state_path(self.root) / 'stop-unverified.json'
+        compile_mode = {'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'compile'}
+        # verify fails, compile fails, compile passes: the verify failure survives.
+        (control / 'fail').touch()
+        self.assertEqual(self.invoke(session_id='editing')['decision'], 'block')
+        self.assertEqual(self.invoke(session_id='editing', env=compile_mode)['decision'], 'block')
+        self.assertEqual(set(json.loads(record.read_text())['failures']), {'verify', 'compile'})
+        (control / 'fail').unlink()
+        (control / 'fail-verify').touch()
+        self.assertIsNone(self.invoke(session_id='editing', env=compile_mode))
+        self.assertEqual(set(json.loads(record.read_text())['failures']), {'verify'})
+        # A new conversation on the same tree must still run the failing verify.
+        self.assertIsNone(self.start_session('query'))
+        output = self.invoke(session_id='query')
+        self.assertEqual(output['decision'], 'block')
+        self.assertEqual(self.calls()[-1], '-B -ntp verify')
+        self.assertEqual(len(self.calls()), 4)
+        # A passing verify clears both modes; the unchanged query session skips again.
+        (control / 'fail-verify').unlink()
+        self.assertIsNone(self.invoke(session_id='query', env=compile_mode))
+        (control / 'fail').touch()
+        self.assertEqual(self.invoke(session_id='query', env=compile_mode)['decision'], 'block')
+        (control / 'fail').unlink()
+        self.assertIsNone(self.invoke(session_id='query'))
+        self.assertFalse(record.exists())
+        before = len(self.calls())
+        self.assertIsNone(self.invoke(session_id='query'))
+        self.assertEqual(len(self.calls()), before)
+        hooks = load_hook_runtime()
+        root = str(self.root)
+        # A failure recorded after a passing build started (concurrent Stop) is kept.
+        hooks.record_failure(root, 'verify', 'e' * 64)
+        at = json.loads(record.read_text())['failures']['verify']['at']
+        hooks.clear_failures(root, 'verify', at - 1)
+        self.assertIn('verify', json.loads(record.read_text())['failures'])
+        hooks.clear_failures(root, 'compile', at + 1)
+        self.assertIn('verify', json.loads(record.read_text())['failures'])
+        # Without the lock nothing is cleared, but a failure is still recorded.
+        with open(state_path(self.root) / 'stop-unverified.lock', 'a') as lock, \
+                mock.patch.object(hooks, 'RECORD_LOCK_SECONDS', .2):
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            hooks.clear_failures(root, 'verify', at + 1)
+            self.assertIn('verify', json.loads(record.read_text())['failures'])
+            hooks.record_failure(root, 'compile', 'f' * 64)
+            self.assertEqual(json.loads(record.read_text())['failures']['compile']['fingerprint'], 'f' * 64)
+        hooks.clear_failures(root, 'verify', time.time() + 1)
+        self.assertFalse(record.exists())
+        # Concurrent failures of both modes are both kept.
+        threads = [threading.Thread(target=hooks.record_failure, args=(root, mode, char * 64))
+                   for mode, char in (('verify', 'a'), ('compile', 'b')) for _ in range(5)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(timeout=30)
+        self.assertEqual({mode: entry['fingerprint'] for mode, entry in json.loads(record.read_text())['failures'].items()},
+                         {'verify': 'a' * 64, 'compile': 'b' * 64})
+
+    def test_unusable_baseline_never_skips(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper()
+        hooks = load_hook_runtime()
+        nested = '{"session": "deep", "fingerprint": ' + '[' * 1500 + ']' * 1500 + '}'
+        self.assertLess(len(nested.encode()), 4096)
+        hooks.baseline_file(str(self.root), 'deep').write_text(nested)
+        self.assertIsNone(self.invoke(session_id='deep'))
+        self.assertEqual(len(self.calls()), 1)
+        record = state_path(self.root) / 'stop-unverified.json'
+        self.assertIsNone(self.start_session('query'))
+        self.assertIsNone(self.invoke(session_id='query'))
+        self.assertEqual(len(self.calls()), 1)  # unchanged since start and no failure recorded
+        record.write_text('[' * 2000 + ']' * 2000)  # under 4096 bytes, but too deep to decode
+        (self.root / 'input.txt').write_text('changed')
+        self.assertIsNone(self.start_session('query-2'))
+        self.assertIsNone(self.invoke(session_id='query-2'))
+        self.assertEqual(len(self.calls()), 2)
+        # Python 3.12 decodes that depth; older decoders raise RecursionError at about 1000
+        # levels. Any decoder error means an unusable entry, never an aborted hook.
+        skip = lambda: hooks.unchanged_since_session_start({'session_id': 'query-2'}, str(self.root))
+        self.assertTrue(skip())
+        for error in (RecursionError, TypeError, UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'bad')):
+            for target in ('baseline', 'record'):
+                with self.subTest(error=type(error).__name__ if not isinstance(error, type) else error.__name__, target=target):
+                    if target == 'record':
+                        record.write_text(json.dumps({'failures': {}}))
+                    calls = {'count': 0}
+                    real = json.loads
+                    def loads(text, *args, **kwargs):
+                        calls['count'] += 1
+                        if calls['count'] == (1 if target == 'baseline' else 2):
+                            raise error
+                        return real(text, *args, **kwargs)
+                    with mock.patch.object(hooks.json, 'loads', loads):
+                        self.assertFalse(skip())
+                    record.unlink(missing_ok=True)
 
 
     def test_session_baseline_publish_is_atomic_without_replacement(self):
@@ -860,7 +992,8 @@ if __name__ == '__main__':
                            'test_session_baselines_are_bounded', 'test_stop_verification_modes', 'test_stop_timeout_reaches_runtime',
                            'test_stop_names_changed_inputs', 'test_stop_build_writing_inputs_blocks_with_message',
                            'test_session_baseline_never_hides_a_known_failure', 'test_session_baseline_never_hides_a_blocked_build',
-                           'test_session_baseline_publish_is_atomic_without_replacement', 'test_session_baseline_invalid_entries'],
+                           'test_session_baseline_publish_is_atomic_without_replacement', 'test_session_baseline_invalid_entries',
+                           'test_failure_record_modes_and_ordering', 'test_unusable_baseline_never_skips'],
         'lint-migration': ['test_lint', 'test_sql_policy_corpus'],
     }
     result = unittest.TextTestRunner().run(unittest.TestSuite(HookTests(name) for name in ['test_diagnostics', *methods[ACTION]]))
