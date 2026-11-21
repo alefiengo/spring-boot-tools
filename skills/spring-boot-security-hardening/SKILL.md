@@ -174,7 +174,7 @@ Configure the issuer's `audience` with the same intended resource identifier as 
 - [ ] Rate limiting on login and account creation.
 - [ ] HSTS header (`Strict-Transport-Security: max-age=31536000; includeSubDomains`).
 - [ ] `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`.
-- [ ] Stateless sessions (JWT), no session cookie for the API.
+- [ ] Bearer-token API: stateless sessions (JWT), no session cookie for the API. Browser-session or cookie-token application: secure session lifecycle (fixation protection, timeouts, invalidation on logout) and CSRF protection instead.
 - [ ] Secrets in environment variables / Vault, never in committed YAML.
 - [ ] DDL-auto = none on all profiles except dev.
 - [ ] Preserve security filtering for relevant servlet dispatches; do not override dispatcher types without testing error and async requests.

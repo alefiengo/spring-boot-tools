@@ -30,7 +30,11 @@ an explicit user request and destination, rejects existing build contexts and
 unsafe targets, obtains options from official Initializr metadata, validates
 and stages the archive, and publishes without overwriting existing files.
 Generation never executes wrappers or tests. Network and archive failures
-must leave existing user files intact.
+must leave existing user files intact. A destination whose path contains a
+symbolic link (any component, final or intermediate) is refused with an error
+that names the link; on macOS `/tmp` and `/var` are links, so pass the resolved
+path. Targets are opened through the parent directory descriptor with
+`O_NOFOLLOW`.
 
 ## Project discovery and execution
 
@@ -39,6 +43,19 @@ wrappers, validates supported tasks and constructs argument arrays. Wrappers
 are preferred to global installations. Requested modules/profiles determine
 execution scope.
 
+A test filter (`testClass`, optionally with a method) is scoped per build tool.
+Maven adds `-Dtest=<class>` together with `-Dsurefire.failIfNoSpecifiedTests=false`,
+so reactor modules that do not contain the class do not fail the build. Because
+that flag also lets a filter that matches nothing exit 0, the runtime checks the
+fresh XML reports: when none in the requested scope executed a test (an empty or
+all-skipped suite does not count), it keeps the real exit code but returns
+`ok: false` with a `No tests matched testClass ...` diagnostic. Gradle rejects a
+filter that matches no test in a task, so in a build with discovered subprojects
+a filter without `module` is refused during planning and the diagnostic says to
+select the subproject; the targeted run keeps `:module:test --rerun-tasks --tests
+<filter>`. Tests that live in the root project of such a build can be targeted
+manually with `:test`.
+
 Each project has a machine-local build lock and records in a private per-user
 state directory, `~/.cache/spring-boot-tools/build-<sha256 of the project
 root>`. The home directory comes from the user database, not from `TMPDIR`,
@@ -46,8 +63,10 @@ root>`. The home directory comes from the user database, not from `TMPDIR`,
 environments differ. The state directories must be owned by the current
 user with mode 0700 (and `~/.cache` owned by the user and not world-writable)
 or the runtime refuses them. Plugin builds acquire that lock before executing. Timeouts, cancellation and output limits terminate the
-build process tree; failed or cancelled attempts invalidate reusable
-verification success. When the MCP server is stopped (SIGINT, SIGTERM or
+build process tree: SIGTERM first, 750 ms for the build's own cleanup, then
+SIGKILL for survivors (the hook ends the process group before it computes the
+post-build fingerprint, so files written by TERM handlers are counted). Failed
+or cancelled attempts invalidate reusable verification success. When the MCP server is stopped (SIGINT, SIGTERM or
 SIGHUP) it terminates the builds in progress before exiting. On Linux a hook's
 build also receives SIGTERM if the hook process dies (`PR_SET_PDEATHSIG`);
 macOS has no equivalent, so a build started by a killed hook can outlive it
@@ -99,6 +118,26 @@ execution environment and runtime implementation. Prose outside source trees
 and recognized output/state directories are excluded. Symlink, oversized or
 unreadable inputs prevent reuse but still allow execution.
 
+Two exclusions keep one session's identity and a build's own logs from defeating
+reuse. The environment part of the fingerprint omits host and session identity:
+variables with the `CLAUDE_`, `CODEX_` or `HERDR_` prefix, and explicit terminal,
+window, multiplexer, SSH and VS Code IPC handles (for example `TERM_SESSION_ID`,
+`TMUX`, `SSH_AUTH_SOCK`, `VSCODE_IPC_HOOK`). Every other variable (JVM and tool
+options, locale, time zone, proxies, CI variables) still counts, and a project
+file that references a host variable explicitly (such as
+`${CLAUDE_PLUGIN_OPTION_APP_PORT}`) brings that value back in. Untracked files
+that Git ignores are excluded from the file part, so a wrapper that appends to a
+git-ignored `logs/app.log` does not invalidate its own verification; ignored
+files that are build inputs must be tracked or the run forced. The runtime asks
+Git for them from the project root with a 2-second, 8 MiB, 50 000-entry bound
+and falls back to the conservative walk (ignored files count) when Git is
+unavailable, errors or exceeds a bound; that fallback can cause extra builds.
+
+When a fingerprint differs from the recorded one, the result includes
+`changedInputs`, up to 20 sorted POSIX paths relative to the project (including
+additions, deletions and mode changes), and `changedInputsTruncated` when more
+changed. Both fields are absent when the fingerprint matches.
+
 Force execution when external tools/services changed or the application uses
 excluded artifacts as build inputs. Local records are an optimization; they
 are not a replacement for independent verification before release.
@@ -124,7 +163,10 @@ Runtime OpenAPI and Actuator inspection accept only loopback targets
 application failures separately. A 5xx body that is not a health document is
 not returned, and ports blocked by the fetch standard cannot be inspected.
 Migration database status requires an explicitly requested mode and the
-application's configured Flyway plugin/database. Local migration lint does not prove database compatibility.
+application's configured Flyway plugin/database, and is supported only for
+Maven (`flyway:info`): a Gradle project gets an error that explains this and
+points to running its configured Flyway task manually. Local migration lint
+does not prove database compatibility.
 
 Secret and DDL hooks are heuristic configuration guards. They compare the
 proposed content with the current file and flag only literals the edit

@@ -80,7 +80,7 @@ Run the app, fix every warning it logs, and **remove it** at the end.
 | `spring-boot-starter-aop`          | `spring-boot-starter-aspectj` (the recipe removes it instead when nothing uses `org.aspectj.lang.annotation`) |
 | `spring-boot-starter-web-services` | `spring-boot-starter-webservices`    |
 | `spring-boot-starter-web`          | `spring-boot-starter-webmvc` (old name deprecated) |
-| `spring-boot-starter-oauth2-resource-server` / `-client` | `spring-boot-starter-security-oauth2-resource-server` / `-client` |
+| `spring-boot-starter-oauth2-resource-server` / `-client` | `spring-boot-starter-security-oauth2-resource-server` / `-client` (the old names still resolve in 4.1.1 as deprecated starters; their POM descriptions say so) |
 | `flyway-core` / `liquibase-core` only | `spring-boot-starter-flyway` / `spring-boot-starter-liquibase` |
 | Jackson 2 BOM (`jackson-bom.version`) | Jackson 3 is the default; Jackson 2 lives under `jackson-2-bom.version` |
 | Testcontainers 1.x                 | Testcontainers 2.x                   |

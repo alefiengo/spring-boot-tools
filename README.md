@@ -42,7 +42,8 @@ The [component evidence inventory](docs/component-evidence.json) distinguishes
 functional coverage from measured model benefit. The
 [evaluation methodology](docs/evaluation-methodology.md) explains offline
 baseline/full/component preparation, provenance and separate generation/judging
-metrics. No live comparative effectiveness or cost-saving result is claimed.
+metrics. The repository records no behavioral evaluation results, and no live
+comparative effectiveness or cost-saving result is claimed.
 
 To create a project, explicitly ask, for example:
 
@@ -185,6 +186,11 @@ changes.
 | `sb-docker-reviewer` | Packaging, persistence, startup and CI | Read-only |
 | `sb-test-writer` | Tests tied to observable behavior and risks | Test sources and fixtures |
 
+`sb-test-writer` has `Write` and `Edit` tools with no technical path
+restriction: its limit to test sources and fixtures is enforced only by its
+instructions, so review its changes before use. The other agents lack write
+tools.
+
 Ask for an agent by name when a specific role is useful. Design before
 implementation; select reviewers from the changed behavior. The caller
 supplies reviewers with diffs and build results. Changes confined to prose
@@ -194,13 +200,21 @@ need no application build or application reviewers.
 
 | Tool | Responsibility |
 |---|---|
-| `initialize_project` | Generate a project through Spring Initializr into an absent target; refuse existing project contexts and targets |
+| `initialize_project` | Generate a project through Spring Initializr into an absent target; refuse existing project contexts, targets and destination paths that contain a symbolic link (the error names the component) |
 | `analyze_project` | Discover projects/modules, declared dependencies, configuration and persistence mappings |
 | `run_build` | Execute controlled Maven/Gradle tasks with module/profile scope |
-| `run_tests` | Run tests and summarize fresh XML reports and failures |
-| `check_migrations` | Inspect migration names, versions, ordering and SQL risks; explicitly request database status |
+| `run_tests` | Run tests and summarize fresh XML reports and failures; `testClass` filters need `module` in a multi-project Gradle build, and a Maven filter that executes no test returns `ok: false` |
+| `check_migrations` | Inspect migration names, versions, ordering and SQL risks; explicitly request database status (Maven only; Gradle projects get an explanation) |
 | `openapi_endpoints` | Inspect static mappings or runtime OpenAPI and compare them |
 | `actuator_health` | Inspect health, readiness and liveness with access diagnostics |
+
+A test filter that executes nothing is reported, not passed. Maven filters add
+`-Dsurefire.failIfNoSpecifiedTests=false` so unrelated reactor modules do not
+fail the run, then the runtime checks fresh reports and returns `ok: false`
+with the real exit code when no test ran. Gradle rejects a filter that matches
+nothing in a task, so in a multi-project build pass `module`. A build that
+exceeds its timeout or is cancelled receives SIGTERM, 750 ms to clean up and
+then SIGKILL.
 
 Static inventories describe available source evidence. Runtime endpoints and
 configured database inspection provide additional evidence when requested.
@@ -226,7 +240,13 @@ instead of being skipped silently.
 
 Verification reuse requires matching project inputs, task, module and
 profiles. Failed/cancelled builds and compile/test-only results cannot satisfy
-a full verification gate. Explicit reruns can force execution. The shared
+a full verification gate. Explicit reruns can force execution. The input
+fingerprint ignores host and session identity (`CLAUDE_*`, `CODEX_*` and
+`HERDR_*` variables, terminal, multiplexer, SSH and VS Code IPC handles) and
+untracked files that Git ignores, so a hook and an MCP call from different
+sessions can share a result; when Git cannot report ignored files the runtime
+falls back to counting them. When inputs differ the result lists up to 20
+`changedInputs` (with `changedInputsTruncated`). The shared
 runtime serializes plugin builds for a project and captures test reports
 inside that lock.
 
@@ -237,10 +257,12 @@ outside the host's Write/Edit tools. No compilation runs after every edit.
 ## Repository validation
 
 GitHub Actions and automatic Dependabot updates are disabled for this
-repository. Changes are validated locally before merging; see
-[CONTRIBUTING.md](CONTRIBUTING.md) for deterministic checks, Java examples,
-real Maven/Gradle fixtures and dependency audits. No hosted check is required
-to merge. The shipped CI skill remains available for application projects.
+repository. Changes are validated locally before merging;
+`scripts/validate-local.sh` runs the deterministic checks and prints an
+environment header for pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for those checks, Java examples, real Maven/Gradle fixtures and dependency
+audits. Linux and WSL2 are exercised; macOS is unverified. No hosted check is
+required to merge. The shipped CI skill remains available for application projects.
 
 ## Repository layout
 
@@ -259,7 +281,7 @@ Versioned top-level directories and configuration files:
 | `mcp-server/` | Node.js MCP server (ES module scope marker only; dependencies live in the root `package.json`) |
 | `package.json`, `package-lock.json` | MCP server dependencies and lockfile at the plugin root, where Claude Code's automatic installer looks |
 | `runtime/` | Shared project discovery, build execution and local gate records |
-| `scripts/` | Offline installation diagnostics |
+| `scripts/` | Offline installation diagnostics and the local validation runner |
 | `skills/` | Task guidance in one `SKILL.md` per skill |
 | `tests/` | Deterministic regression suites and executable Java/Pact/Gatling examples |
 | `.gitignore` | Exclusions for local state, dependencies and generated artifacts |
@@ -277,5 +299,6 @@ The project is licensed under the [MIT license](LICENSE).
 
 See the [changelog](CHANGELOG.md) for release changes and compatibility notes,
 the [release procedure](docs/releases.md) for publication and local evidence,
-and the [audit report](docs/audit-2026-10-31.md) for findings, validation and
-remaining coverage limits.
+and the [v0.1.0-baseline audit from 2026-10-31](docs/audit-2026-10-31.md) for
+its findings, validation and coverage limits (historical; counts in it predate
+later releases).

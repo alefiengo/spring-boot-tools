@@ -88,9 +88,10 @@ spring:
       idle-timeout: 300000
       max-lifetime: 1800000
       connection-timeout: 2000
-      leak-detection-threshold: 1800000
+      leak-detection-threshold: 20000
 ```
 
+- `leak-detection-threshold` logs a stack trace when a connection stays checked out longer than the value (HikariCP minimum 2000 ms). Set it above the slowest legitimate transaction (20000 ms here is a placeholder); a value equal to `max-lifetime` would never fire, since the connection is retired first.
 - Size pools from measured query latency/concurrency and the database budget across all replicas, reserving capacity for migrations and administration. The sum of pools must fit the available connection budget.
 - Read query latency and database saturation under the actual workload; API/ETL labels alone do not determine useful pool size.
 

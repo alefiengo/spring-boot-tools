@@ -104,9 +104,12 @@ When generating a persistence-backed aggregate, preserve the existing entity acc
 ```java
 @RestController
 @RequestMapping("${api.base-path}/v1/users")
-@RequiredArgsConstructor
 public class UserController {
     private final UserService userService;
+
+    public UserController(UserService userService) {
+        this.userService = userService;
+    }
 
     @GetMapping
     public ResponseEntity<PagedModel<UserDTO>> search(
@@ -135,7 +138,7 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
 ### 5. DTOs with validation
 
-Use Bean Validation (`jakarta.validation.constraints`). Do not repeat Arrays → `List<>`.
+Use Bean Validation (`jakarta.validation.constraints`). Prefer `List<T>` over arrays for collection fields.
 
 ```java
 public record CreateUserDTO(

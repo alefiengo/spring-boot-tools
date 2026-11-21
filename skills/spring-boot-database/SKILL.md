@@ -100,7 +100,7 @@ If the application defines multiple persistence units, qualify the injection poi
 
 - Preserve schema names and the configured naming strategy. Explicit `@Table` / `@Column` mappings are useful when defaults do not match; plural snake_case is only the example convention.
 - Choose identifier types from existing identity, scale and generation requirements; do not replace UUIDs or sequences to match the BIGSERIAL example.
-- Choose timestamp semantics from the domain and database. PostgreSQL `TIMESTAMPTZ` suits instants; local wall-clock values can need `TIMESTAMP`.
+- Choose timestamp semantics from the domain and database. PostgreSQL `TIMESTAMPTZ` suits instants and maps to `java.time.Instant` or `OffsetDateTime` (the `createdAt` query below binds an `Instant`); local wall-clock values can need `TIMESTAMP` and `LocalDateTime`.
 - Map booleans to the actual database type and dialect; avoid a blanket type conversion across databases.
 - For PostgreSQL JSONB with a compatible Hibernate version, use `@JdbcTypeCode(SqlTypes.JSON)`; `columnDefinition = "jsonb"` alone does not configure JSON serialization.
 
@@ -134,7 +134,7 @@ public interface UserRepository extends JpaRepository<User, Long> {
         SELECT u FROM User u
         WHERE u.createdAt > ?1
         """)
-    List<User> findSince(LocalDateTime date);
+    List<User> findSince(Instant date);
 
     // Native
     @Query(nativeQuery = true, value = """
