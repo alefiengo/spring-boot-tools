@@ -3,6 +3,11 @@
 
 CLI accepts a JSON object on stdin and returns JSON on stdout. Builds under MCP
 inherit its dedicated CLI process group so host cancellation reaches the whole group.
+When a direct CLI invocation shares a shell session, the build starts a separate
+session so cleanup can identify reparented children without signalling the shell.
+Send TERM, INT or HUP to the runtime for coordinated cancellation. A group KILL
+cannot be forwarded to that separate session. Linux also sends TERM to the build
+leader on parent death; macOS has no equivalent.
 """
 import ctypes
 import errno
@@ -55,6 +60,10 @@ ALIASES = {'maven': {'check': 'verify', 'dependencies': 'dependency:tree', 'migr
            'gradle': {'compile': 'classes', 'test-compile': 'testClasses', 'verify': 'check', 'package': 'assemble'}}
 SETTINGS_FILES = ('settings.gradle.kts', 'settings.gradle')
 WRAPPERS = ('mvnw', 'gradlew')
+BUILD_DESCRIPTORS = frozenset((*BUILD_FILES, *SETTINGS_FILES))
+BUILD_INPUT_NAMES = frozenset(('pom.xml', 'gradle.properties', *WRAPPERS, 'mvnw.cmd', 'gradlew.bat'))
+PROTECTED_TREES = frozenset(('src', '.mvn', 'gradle'))
+MAX_WALK_ENTRIES = 100000
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 
 
@@ -320,35 +329,21 @@ def build_plan(request):
     return dict(info, command=command, tasks=tasks, profiles=profiles, module=module, testClass=request.get('testClass'))
 
 
-def protected_build_input(relative):
-    return (not {'src', '.mvn', 'gradle'}.isdisjoint(relative.parts)
-            or relative.name in ('pom.xml', 'gradle.properties', *WRAPPERS, 'mvnw.cmd', 'gradlew.bat')
-            or relative.name.startswith(('build.gradle', 'settings.gradle')))
-
-
-def ignored_directory(path, root):
-    relative = path.relative_to(root)
-    # A package may be named build, target, docs or node_modules. None of those
-    # names excludes source files when they occur inside a source tree.
-    if path.name not in IGNORED or protected_build_input(relative):
-        return False
+def ignored_directory(path, module_roots):
     if path.name in ('target', 'build', 'dist'):
-        if build_file(path) or has_settings(path):
-            return False  # a module can legitimately be named build or target
-        # Output names outside a module root may be real input directories.
-        return path.parent == root or bool(build_file(path.parent)) or any(Path(module['root']) == path.parent for module in module_entries(root, 'gradle'))
-    return True
+        # A module may itself be named build or target.
+        return path.parent in module_roots and path not in module_roots and not build_file(path) and not has_settings(path)
+    return path.name in IGNORED
 
 
-def relevant(path, root):
-    relative = path.relative_to(root)
-    if protected_build_input(relative):
-        return True
-    if any(ignored_directory(root / Path(*relative.parts[:index + 1]), root) for index in range(len(relative.parts) - 1)):
-        return False
-    # Build scripts can read arbitrary configuration names, binary fixtures,
-    # extensionless inputs and data under docs. Exempt only pure prose outside src.
-    return path.suffix.lower() not in ('.md', '.rst', '.adoc')
+def spring_config_directory(folder, module_roots):
+    return (folder in module_roots or (folder.name == 'config' and folder.parent in module_roots)
+            or (folder.parent.name == 'config' and folder.parent.parent in module_roots))
+
+
+def protected_input_name(name, spring_config):
+    return (name in BUILD_INPUT_NAMES or name in PROTECTED_TREES or name.startswith(('build.gradle', 'settings.gradle'))
+            or (spring_config and name.startswith('application') and name.endswith(('.yml', '.yaml', '.properties'))))
 
 
 def git_ignored_paths(root):
@@ -381,61 +376,102 @@ def git_ignored_paths(root):
     return set() if root in ignored else ignored
 
 
+def fingerprint_inputs(root):
+    ignored_names = {}
+    for path in git_ignored_paths(root):
+        ignored_names.setdefault(path.parent, set()).add(path.name)
+    module_roots = {root}
+    if has_settings(root) and build_file(root) != 'pom.xml':
+        module_roots.update(Path(m['root']) for m in module_entries(root, 'gradle'))
+    pending = [(root, False)]
+    walked = 0
+    while pending:
+        folder, ignored_folder = pending.pop()
+        relative = folder.relative_to(root)
+        prefix = relative.as_posix() + '/' if relative.parts else ''
+        protected_tree = not PROTECTED_TREES.isdisjoint(relative.parts)
+        ignored_here = ignored_names.get(folder, ())
+        directories, filenames = [], []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    walked += 1
+                    if walked > MAX_WALK_ENTRIES:
+                        raise ValueError('Build input walk exceeds safety limit; verification will run without reuse')
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        if not ignored_folder and entry.name not in ignored_here:
+                            raise
+                        is_dir = False  # Still inspect a protected name if its type was unavailable.
+                    if is_dir:
+                        directories.append(entry.name)
+                    else:
+                        filenames.append(entry.name)
+        except OSError:
+            if ignored_folder and not protected_tree and not spring_config_directory(folder, module_roots):
+                continue  # An inaccessible ignored volume is not a known input.
+            raise
+        if not BUILD_DESCRIPTORS.isdisjoint(filenames):
+            module_roots.add(folder)
+        spring_config = spring_config_directory(folder, module_roots)
+        for name in sorted(directories, reverse=True):
+            path = folder / name
+            child_ignored = ignored_folder or name in ignored_here
+            optional = (child_ignored and not protected_tree and not protected_input_name(name, spring_config)
+                        and not spring_config_directory(path, module_roots))
+            try:
+                if not protected_tree and ignored_directory(path, module_roots):
+                    continue
+                linked = path.is_symlink()
+            except OSError:
+                if optional:
+                    continue
+                raise
+            if linked:
+                if optional:
+                    continue
+                raise ValueError(f'Cannot fingerprint symlinked build directory: {path}')
+            pending.append((path, child_ignored))
+        for name in sorted(filenames):
+            protected = protected_tree or protected_input_name(name, spring_config)
+            if (ignored_folder or name in ignored_here) and not protected:
+                continue
+            path = folder / name
+            if not protected and path.suffix.lower() in ('.md', '.rst', '.adoc'):
+                continue
+            yield prefix + name, path
+
+
 def fingerprint_snapshot(root):
-    root = Path(root)
     digest = hashlib.sha256(Path(__file__).read_bytes())
     count, total = 0, 0
     environment = {key: value for key, value in os.environ.items()
                    if key not in INVOCATION_ENV and not key.startswith(INVOCATION_PREFIXES)}
-    ignored = git_ignored_paths(root)
     files = {}
-    def walk_error(error):
-        raise error
-    for folder, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
-        folder = Path(folder)
-        ignored_folder = folder in ignored or not ignored.isdisjoint(folder.parents)
-        # Git can collapse an ignored module into one directory entry. Descend
-        # to retain its sources and configuration while skipping other ignored files.
-        keep = []
-        for name in sorted(directories):
-            path = folder / name
-            if ignored_directory(path, root):
-                continue
-            if path.is_symlink():
-                if (ignored_folder or path in ignored) and not protected_build_input(path.relative_to(root)):
-                    continue
-                raise ValueError(f'Cannot fingerprint symlinked build directory: {path}')
-            keep.append(name)
-        directories[:] = keep
-        for name in sorted(filenames):
-            path = folder / name
-            if (ignored_folder or path in ignored) and not protected_build_input(path.relative_to(root)):
-                continue
-            if not relevant(path, root):
-                continue
-            if path.is_symlink():
-                # Avoid treating uninspected external sources as verified.
-                raise ValueError(f'Cannot fingerprint symlinked build input: {path}')
-            metadata = path.stat()
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError(f'Cannot fingerprint nonregular build input: {path}')
-            if metadata.st_size + total > 128 * 1024 * 1024:
-                raise ValueError('Build input fingerprint exceeds safety limit; verification will run without reuse')
-            with path.open('rb') as source:
-                content = source.read(128 * 1024 * 1024 - total + 1)
-            total += len(content)
-            count += 1
-            if total > 128 * 1024 * 1024 or count > 50000:
-                raise ValueError('Build input fingerprint exceeds safety limit; verification will run without reuse')
-            relative = path.relative_to(root).as_posix()
-            for variable in re.findall(rb'\$\{([A-Za-z_][A-Za-z0-9_]*)', content):
-                key = variable.decode()
-                environment[key] = os.environ.get(key)
-            file_digest = hashlib.sha256(content)
-            file_digest.update(stat.S_IMODE(metadata.st_mode).to_bytes(2, 'big'))
-            files[relative] = file_digest.digest()
-            encoded_path = os.fsencode(relative)
-            digest.update(len(encoded_path).to_bytes(8, 'big') + encoded_path + files[relative])
+    for relative, path in fingerprint_inputs(Path(root).resolve()):
+        if path.is_symlink():
+            # Avoid treating uninspected external sources as verified.
+            raise ValueError(f'Cannot fingerprint symlinked build input: {path}')
+        metadata = path.stat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f'Cannot fingerprint nonregular build input: {path}')
+        if metadata.st_size + total > 128 * 1024 * 1024:
+            raise ValueError('Build input fingerprint exceeds safety limit; verification will run without reuse')
+        with path.open('rb') as source:
+            content = source.read(128 * 1024 * 1024 - total + 1)
+        total += len(content)
+        count += 1
+        if total > 128 * 1024 * 1024 or count > 50000:
+            raise ValueError('Build input fingerprint exceeds safety limit; verification will run without reuse')
+        for variable in re.findall(rb'\$\{([A-Za-z_][A-Za-z0-9_]*)', content):
+            key = variable.decode()
+            environment[key] = os.environ.get(key)
+        file_digest = hashlib.sha256(content)
+        file_digest.update(stat.S_IMODE(metadata.st_mode).to_bytes(2, 'big'))
+        files[relative] = file_digest.digest()
+        encoded_path = os.fsencode(relative)
+        digest.update(len(encoded_path).to_bytes(8, 'big') + encoded_path + files[relative])
     digest.update(json.dumps(environment, sort_keys=True).encode())
     return digest.hexdigest(), files
 
