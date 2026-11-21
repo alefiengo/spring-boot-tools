@@ -10,7 +10,14 @@ It does not install tools or alter global configuration. On an empty dependency
 cache the explicit real build needs registry access; it is intentionally absent
 from `test-basic.sh` and the default deterministic suites.
 
-Set `SB_REAL_BUILD_KEEP_FAILURE=1` to preserve the temporary fixture and its
+After checking the installed version of each selected tool, the runner executes
+its regression from `tests/project-runtime/real-test-filters.py`. The Maven case
+filters a test class in the second reactor module, both from the root and with
+`-pl` and `-am`, and checks the diagnostic for a missing class. The Gradle case
+runs a filtered test in its subproject and checks the diagnostic when the
+module is omitted.
+
+Set `SB_REAL_BUILD_KEEP_FAILURE=1` to preserve the MCP/Stop fixture and its
 verification records on failure; their paths are printed for inspection. Keep
 the plugin runtime and adapters unchanged during a run: the verification
 fingerprint includes the runtime implementation as well as fixture inputs.
