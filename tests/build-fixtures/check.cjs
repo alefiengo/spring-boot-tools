@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const readline = require('node:readline');
 const repo = path.resolve(__dirname, '../..');
 const tools = process.argv.slice(2);
@@ -192,6 +192,8 @@ async function check(tool) {
     const version = await execute(executable, ['--version'], { timeout: 30000 });
     assert.equal(version.code, 0, version.stderr);
     assert.match(version.stdout, tool === 'maven' ? /Apache Maven 3\.10\.0\b/ : /Gradle 9\.8\.1\b/, 'use the pinned installed build tool; this script never downloads distributions');
+    const filterTest = tool === 'maven' ? 'test_maven_reactor' : 'test_gradle_subproject';
+    execFileSync('python3', [path.join(repo, 'tests/project-runtime/real-test-filters.py'), '-v', `RealTestFilters.${filterTest}`], { stdio: 'inherit' });
     await check(tool);
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
