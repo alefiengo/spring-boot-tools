@@ -367,6 +367,86 @@ echo '<testsuites><testsuite tests="2" skipped="1"/></testsuites>' > target/sure
             self.assertFalse(result['changedInputsTruncated'])
             self.assertFalse(result['reused'])
 
+    def track_build_with_ignores(self, rules):
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        subprocess.run(['git', 'add', '--', 'pom.xml', 'mvnw'], cwd=self.root, check=True)
+        (self.root / '.gitignore').write_text(rules)
+
+    @unittest.skipIf(os.geteuid() == 0, 'requires mode 000 to prevent directory reads')
+    def test_unreadable_subtree_in_ignored_volume(self):
+        self.track_build_with_ignores('data/\n')
+        locked = self.root / 'data/pg'
+        locked.mkdir(parents=True)
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        self.assertTrue(self.invoke()['cacheable'])
+        self.assertTrue(self.invoke()['reused'])
+        (self.root / '.gitignore').write_text('')
+        with self.assertRaises(PermissionError):
+            project_runtime.fingerprint(self.root)
+
+    def test_fingerprint_large_ignored_directory(self):
+        self.track_build_with_ignores('big/\n')
+        big = self.root / 'big'
+        big.mkdir()
+        for index in range(30000):
+            (big / str(index)).touch()
+        start = time.monotonic()
+        _, files = project_runtime.fingerprint_snapshot(self.root)
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 1.5, 'only the fingerprint walk is timed')
+        self.assertEqual(set(files), {'.gitignore', 'mvnw', 'pom.xml', 'src/main/java/App.java'})
+
+    def test_walk_limit_disables_reuse_for_ignored_entries(self):
+        self.track_build_with_ignores('big/\n')
+        big = self.root / 'big'
+        big.mkdir()
+        for index in range(80):
+            (big / str(index)).touch()
+        with patch.object(project_runtime, 'MAX_WALK_ENTRIES', 40, create=True):
+            for _ in range(2):
+                result = run_build(self.request())
+                self.assertTrue(result['ok'])
+                self.assertFalse(result['cacheable'])
+                self.assertFalse(result['reused'])
+                self.assertIn('walk', result['cacheDiagnostic'])
+
+    def test_ignored_spring_config_locations_in_each_module(self):
+        (self.root / 'pom.xml').write_text('<project><modules><module>app</module></modules></project>')
+        (self.root / 'app').mkdir()
+        (self.root / 'app/pom.xml').write_text('<project/>')
+        self.track_build_with_ignores('application*\nconfig/\n')
+        configs = ('application-local.yaml', 'config/application.yml', 'config/db/application-pg.properties',
+                   'app/application.properties', 'app/config/application-dev.yml', 'app/config/db/application.yaml')
+        unrelated = ('config/deep/nested/application.yml', 'unrelated/config/application.yml')
+        for name in (*configs, *unrelated):
+            file = self.root / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text('initial')
+        self.assertTrue(self.invoke()['ok'])
+        for name in configs:
+            with self.subTest(name=name):
+                (self.root / name).write_text('updated')
+                self.assertFalse(self.invoke()['reused'])
+        for name in unrelated:
+            (self.root / name).write_text('updated')
+        self.assertTrue(self.invoke()['reused'])
+
+    def test_ignored_config_in_remapped_gradle_module_without_build_script(self):
+        (self.root / 'pom.xml').unlink()
+        self.wrapper.rename(self.root / 'gradlew')
+        (self.root / 'settings.gradle').write_text('include(":api")\nproject(":api").projectDir = file("apps/users")')
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        subprocess.run(['git', 'add', '--', 'settings.gradle', 'gradlew'], cwd=self.root, check=True)
+        (self.root / '.gitignore').write_text('apps/\n')
+        config = self.root / 'apps/users/config/db/application-dev.yaml'
+        config.parent.mkdir(parents=True)
+        config.write_text('initial')
+        self.assertTrue(self.invoke()['ok'])
+        self.assertTrue(self.invoke()['reused'])
+        config.write_text('updated')
+        self.assertFalse(self.invoke()['reused'])
+
     def test_unavailable_git_keeps_ignored_files_as_inputs(self):
         subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
         (self.root / '.gitignore').write_text('*.log\n')
