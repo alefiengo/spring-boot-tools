@@ -22,7 +22,7 @@ The doctor checks agreement between Claude and Codex plugin versions, the
 marketplace entry, MCP package/lockfile versions, and the MCP server's version
 literal. These are bundle consistency checks. They do not query a registry,
 establish the latest release, or prove that a host cached the same version.
-Its prerequisites are Linux/macOS, Node >=20.3 and Python >=3.11; the doctor
+Its prerequisites are Linux/macOS, Node >=22 and Python >=3.11; the doctor
 itself needs Python 3.11+ before it can report anything. Python/runtime code
 uses the standard library; the Node MCP dependencies must be installed
 separately. Application JDK/build dependencies depend on the application and

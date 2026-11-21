@@ -34,8 +34,17 @@ repository code. Run builds in repositories you trust.
 The secret and DDL guards inspect Write payloads and the proposed result of
 Edit, and flag only literals that the edit introduces, not values already in
 the file. They recognize common scalar configuration patterns. They do not
-cover every YAML/Spring construct or writes made through other tools. In test
-paths the secret guard asks for confirmation instead of denying, and the DDL
+cover every YAML/Spring construct or writes made through other tools. The secret
+guard checks Spring configuration, Docker Compose and `.env` files for
+credential keys, credentials embedded in URLs (JDBC, AMQP, Redis, Mongo, HTTP),
+AWS, GitHub and Slack tokens, private-key blocks and a YAML value on the line
+after its key. It denies in Spring configuration, Compose files and `.env`
+templates (`.env.example`, `.env.sample`, `.env.template`); local `.env`,
+`.env.*` and `*.env` files and test paths ask for confirmation. It does not
+inspect Java sources, JSON, XML or other file types, checks only the first
+line of a multi-line YAML scalar, misses URL passwords containing an unencoded
+`/` or `@` and JDBC `;password=...` parameters, recognizes only the listed
+token formats, and checks comments for tokens only. The DDL
 guard exempts `src/test/**`, `*-test.*` and `application-test*` files. Missing
 Python or malformed hook input produces a visible diagnostic and fails open;
 a discovery error other than "no project found" is reported as a notice. Keep

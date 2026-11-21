@@ -106,9 +106,34 @@ scope. Use a root test invocation to collect the whole reactor's reports.
 ## Verification reuse
 
 The Stop hook requests Maven `verify` or Gradle `check` against current input
-fingerprints. No post-edit marker or build is required. When Claude is already
-continuing because of a Stop hook (`stop_hook_active`), the hook still
-verifies but reports the result without blocking again. Discovery errors other
+fingerprints. No post-edit marker or build is required. Two plugin options
+shape it: `stop_verification` (`verify`, the default; `compile`, Maven `compile`
+or Gradle `classes`, which never satisfies the full verification gate; or `off`)
+and `stop_timeout_seconds` (default 300, 30 to 600, passed to the runtime as
+`timeoutMs`; the hook registration allows 660 s to cover the build and both
+fingerprints). Claude Code 2.1.330 applies no `default` to an option that was
+never configured: `${user_config.KEY}` fails and `CLAUDE_PLUGIN_OPTION_<KEY>` is
+not exported, and hook registrations cannot use `${user_config.*}`. The hook
+therefore reads those environment variables, treats an absent or empty value as
+the default and, for an invalid value, emits a notice and uses the default. The
+output is always a single JSON object, with notices in `systemMessage`.
+
+The `session-baseline` SessionStart hook (matcher `startup|clear`) calls the
+runtime's `discover` and `fingerprint` and stores the result atomically in the
+project's private state directory under `sessions/<sha256 of session id>.json`
+(mode 0700, at most 64 files per project, oldest pruned, never overwriting an
+existing baseline). Stop reads it with `O_NOFOLLOW` and a 4 KiB limit and skips
+silently when the current fingerprint matches. `resume`, `fork` and `compact`
+record no baseline, since they continue a conversation that may hold unverified
+edits; without a baseline, or if the fingerprint cannot be computed, Stop
+verifies as before. Consequently a tree that was already broken at session start
+is not verified until something changes. Recording is silent on every error,
+and a very large project can make it take up to the hook's 30 s limit, in which
+case no baseline exists. When a build changes its own inputs, the Stop message
+lists up to 10 changed paths from `changedInputs` and suggests `.gitignore`.
+
+When Claude is already continuing because of a Stop hook (`stop_hook_active`),
+the hook still verifies but reports the result without blocking again. Discovery errors other
 than "no project found" are reported as a notice. MCP and PR review can share a completed equivalent verification gate.
 
 Reuse requires successful full verification with unchanged inputs and matching
@@ -145,7 +170,15 @@ are not a replacement for independent verification before release.
 ## Inspection limits
 
 Source inventories use literal configuration, dependency declarations,
-annotations and SQL. Parent builds, catalogs, computed routes and runtime
+annotations and SQL. An unparseable YAML document is skipped and reported in
+`warnings` with its relative path; ports from other documents and files are
+kept. A static endpoint's `version` is `null` unless its path has a literal
+`/v<N>` segment, and a path with a `${...}` placeholder is kept with one warning
+per file and placeholder. In OpenAPI comparison those static routes are listed
+in `comparison.unresolved`, and runtime paths that could match by method and
+literal fragments in `comparison.unresolvedRuntime`; exact comparison of literal
+routes still uses method and path. `check_migrations` status on Gradle is
+refused after discovery with an explanation. Parent builds, catalogs, computed routes and runtime
 configuration can provide information unavailable to static inspection.
 Unknown evidence should stay unknown.
 
@@ -160,7 +193,9 @@ ignored; successful verification reuse depends only on scope and fingerprints.
 
 Runtime OpenAPI and Actuator inspection accept only loopback targets
 (`localhost`, `127.0.0.0/8` or `::1`) and report access, endpoint and
-application failures separately. A 5xx body that is not a health document is
+application failures separately. A refused or reset local connection
+(`ECONNREFUSED` or `ECONNRESET`) gets one diagnostic: check that the
+application listens on the configured port. A 5xx body that is not a health document is
 not returned, and ports blocked by the fetch standard cannot be inspected.
 Migration database status requires an explicitly requested mode and the
 application's configured Flyway plugin/database, and is supported only for
@@ -170,8 +205,18 @@ does not prove database compatibility.
 
 Secret and DDL hooks are heuristic configuration guards. They compare the
 proposed content with the current file and flag only literals the edit
-introduces. The secret guard asks for confirmation instead of denying in test
-paths, and the DDL guard exempts `src/test/**`, `*-test.*` and
+introduces. The secret guard covers Spring configuration, Compose
+(`docker-compose*.yml`, `compose*.yaml`) and `.env` files: credential keys,
+credentials in URLs (`scheme://user:password@host`, including JDBC), AWS
+(`AKIA`/`ASIA`), GitHub and Slack tokens, private-key blocks and a YAML value on
+the next line. Placeholders such as `${VAR}` are accepted, and Compose
+interpolation in Compose and `.env` files. It denies in Spring configuration,
+Compose files and `.env` templates, and asks for confirmation for local `.env`,
+`.env.*` and `*.env` files and in test paths. Java sources, JSON, XML and other
+file types are not inspected; only the first line of a multi-line YAML scalar is
+checked; URL passwords with an unencoded `/` or `@` and JDBC `;password=...`
+parameters are missed; only the listed token formats are recognized; comments
+are checked for tokens only. The DDL guard exempts `src/test/**`, `*-test.*` and
 `application-test*` files. Reviewers depend on the caller for diffs and
 executable build evidence. See
 [SECURITY.md](../SECURITY.md) for trust boundaries.
