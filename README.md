@@ -150,21 +150,32 @@ variables itself, treats an absent or empty value as the default and, for an
 invalid value, shows a notice and uses the default. Project build files
 determine the build tool and dependency versions.
 
-## Update to v0.4.0
+## Update to v0.5.0
 
-See the [v0.4.0 release](https://github.com/alefiengo/spring-boot-tools/releases/tag/v0.4.0)
-and the [changelog](CHANGELOG.md) for compatibility changes: Actuator and
-OpenAPI inspection accept only loopback hosts, build state moves to
-`~/.cache/spring-boot-tools/`, and the design agents return documents instead
-of writing files. Codex verification remains explicit.
+See the [v0.5.0 release](https://github.com/alefiengo/spring-boot-tools/releases/tag/v0.5.0)
+and the [changelog](CHANGELOG.md) for compatibility changes:
 
-Update your installed plugin and restart the host so it reloads the manifests
-and MCP server. The dependency manifest and lockfile moved from `mcp-server/`
-to the plugin root: a marketplace update installs them automatically, while a
-checkout used with `--plugin-dir` needs `npm ci` in its root (remove a leftover
-`mcp-server/node_modules`; the doctor warns about it). Then use the
-installation doctor above to check the bundle and workspace. Do not copy hook
-registrations from an older version into the updated installation.
+- Node.js 22 or later is required; the installation doctor rejects older
+  versions. Update Node.js before updating the plugin.
+- The static `openapi_endpoints` inventory returns `version: null` instead of
+  `"1"` for paths without a `/v<N>` segment.
+- `run_tests` with `testClass` in a Gradle multi-project build requires
+  `module`, and `check_migrations` status is Maven-only.
+- A fifth hook, `session-baseline`, runs at session start. The Stop hook skips
+  verification when nothing changed during the session (never on a tree whose
+  last check failed) and is configurable with `stop_verification` and
+  `stop_timeout_seconds` (see [Configuration](#configuration)).
+- `guard-secrets` asks before writing local `.env` files and detects more
+  credential formats, so some edits it allowed before are now denied.
+
+Update your installed plugin and restart the host so it reloads the manifests,
+hooks and MCP server. The MCP dependencies changed: a marketplace update
+installs them automatically, while a checkout used with `--plugin-dir` needs
+`npm ci` in its root. Then use the installation doctor above to check the
+bundle and workspace. Do not copy hook registrations from an older version into
+the updated installation. When updating from a version older than v0.4.0, also
+read the [v0.4.0 release](https://github.com/alefiengo/spring-boot-tools/releases/tag/v0.4.0)
+notes.
 
 ## Skills
 
