@@ -115,12 +115,23 @@ def refuse_project(location):
     raise ValueError(f'Existing project context at {project["root"]}; initialization refused')
 
 
+def refuse_symlink(component):
+    raise ValueError(f'Symlinked path components are refused ({component}). On macOS, /tmp and /var '
+                     'are symlinks. Use the resolved path to the destination.')
+
+
 def open_directory(folder):
     """Open each path component without following symlinks, anchoring all writes."""
     handle = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
         for component in folder.parts[1:]:
-            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=handle)
+            try:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=handle)
+            except OSError as error:
+                if error.errno in (errno.ENOTDIR, errno.ELOOP) and stat.S_ISLNK(
+                        os.stat(component, dir_fd=handle, follow_symlinks=False).st_mode):
+                    refuse_symlink(component)
+                raise
             os.close(handle)
             handle = child
         return handle
@@ -131,9 +142,11 @@ def open_directory(folder):
 
 def check_destination(parent, name):
     try:
-        os.stat(name, dir_fd=parent, follow_symlinks=False)
+        metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
     except FileNotFoundError:
         return
+    if stat.S_ISLNK(metadata.st_mode):
+        refuse_symlink(name)
     raise ValueError('Target already exists; choose an absent directory (no overwrites)')
 
 

@@ -161,7 +161,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(info['modules'][0]['path'], 'services/api')
         plan = build_plan(self.request(task='test', module='services/api', profiles=['integration'], testClass='app.Test#example'))
         self.assertIn('-Pintegration', plan['command'])
-        self.assertEqual(plan['command'][-4:], ['-pl', 'services/api', '-am', '-Dtest=app.Test#example'])
+        self.assertEqual(plan['command'][-5:], ['-pl', 'services/api', '-am', '-Dtest=app.Test#example',
+                                                '-Dsurefire.failIfNoSpecifiedTests=false'])
         for bad in ({'tasks':['verify; touch bad']}, {'profiles':['-Dexec=bad']}, {'module':'../outside'}, {'testClass':'X; echo bad','task':'test'}):
             with self.assertRaises(ValueError):
                 build_plan(self.request(**bad))
@@ -181,6 +182,41 @@ class RuntimeTests(unittest.TestCase):
         plan = build_plan(self.request(task='verify', module='services/users'))
         self.assertEqual(plan['command'][-1], ':services:users:check')
         self.assertEqual(discover(self.root / 'api')['root'], str(self.root))
+
+    def test_gradle_filtered_tests_require_module_in_multiproject(self):
+        (self.root / 'pom.xml').unlink()
+        (self.root / 'settings.gradle').write_text('include(":core", ":extra")')
+        (self.root / 'gradlew').write_text('#!/bin/sh\n')
+        with self.assertRaisesRegex(ValueError, 'specify the module'):
+            build_plan(self.request(task='test', testClass='ExtraTest'))
+        plan = build_plan(self.request(task='test', module='extra', testClass='ExtraTest#example'))
+        self.assertEqual(plan['command'][-4:], [':extra:test', '--rerun-tasks', '--tests', 'ExtraTest.example'])
+
+    def test_gradle_migration_status_explains_maven_scope(self):
+        (self.root / 'pom.xml').unlink()
+        (self.root / 'build.gradle').touch()
+        with self.assertRaisesRegex(ValueError, 'only for Maven.*flywayInfo'):
+            build_plan(self.request(task='migration-status'))
+        with self.assertRaisesRegex(ValueError, 'Unsupported gradle task'):
+            build_plan(self.request(task='flywayInfo'))
+
+    def test_filtered_build_requires_fresh_executed_tests(self):
+        reports = self.root / 'target/surefire-reports'
+        reports.mkdir()
+        (reports / 'old.xml').write_text('<testsuite tests="1"/>')
+        for xml in ('<testsuite tests="0"/>', '<testsuite tests="1" skipped="1"/>',
+                    '<metadata><testsuite tests="2"/></metadata>'):
+            self.wrapper.write_text(f"#!/bin/sh\necho '{xml}' > target/surefire-reports/new.xml\n")
+            for collect in (True, False):
+                with self.subTest(xml=xml, collect=collect):
+                    result = self.invoke(task='test', testClass='Missing', collectTestReports=collect)
+                    self.assertEqual(result['exitCode'], 0)
+                    self.assertFalse(result['ok'])
+                    self.assertIn('No tests matched testClass Missing', result['diagnostic'])
+        self.wrapper.write_text("""#!/bin/sh
+echo '<testsuites><testsuite tests="2" skipped="1"/></testsuites>' > target/surefire-reports/new.xml
+""")
+        self.assertTrue(self.invoke(task='test', testClass='Found')['ok'])
 
     def test_reuse_and_changes_outside_hooks(self):
         self.assertFalse(self.invoke()['reused'])
@@ -263,6 +299,52 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result['inputsChanged'])
         self.assertFalse(self.invoke()['reused'])
 
+    def test_git_ignored_build_outputs_and_tracked_inputs(self):
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        (self.root / '.gitignore').write_text('logs/\n')
+        self.wrapper.write_text('#!/bin/sh\nmkdir -p logs\necho run >> logs/app.log\n')
+        first = self.invoke()
+        self.assertFalse(first['inputsChanged'])
+        self.assertNotIn('changedInputs', first)
+        self.assertNotIn('changedInputsTruncated', first)
+        self.assertTrue(self.invoke()['reused'])
+        subprocess.run(['git', 'add', '-f', 'logs/app.log'], cwd=self.root, check=True)
+        result = self.invoke(reuse=False)
+        self.assertTrue(result['inputsChanged'])
+        self.assertEqual(result['changedInputs'], ['logs/app.log'])
+        self.assertFalse(result['changedInputsTruncated'])
+
+    def test_unignored_build_outputs_report_paths(self):
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        self.wrapper.write_text('#!/bin/sh\nmkdir -p logs\necho run >> logs/app.log\n')
+        for _ in range(2):
+            result = self.invoke()
+            self.assertTrue(result['inputsChanged'])
+            self.assertEqual(result['changedInputs'], ['logs/app.log'])
+            self.assertFalse(result['changedInputsTruncated'])
+            self.assertFalse(result['reused'])
+
+    def test_unavailable_git_keeps_ignored_files_as_inputs(self):
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        (self.root / '.gitignore').write_text('*.log\n')
+        log = self.root / 'app.log'
+        log.touch()
+        for error in (FileNotFoundError('git'), subprocess.TimeoutExpired('git', 2)):
+            with self.subTest(error=error), patch.object(project_runtime.subprocess, 'run', side_effect=error):
+                before = project_runtime.fingerprint(self.root)
+                self.assertRegex(before, r'^[a-f0-9]{64}$')
+                with log.open('a') as output:
+                    output.write('changed')
+                self.assertNotEqual(before, project_runtime.fingerprint(self.root))
+
+    def test_changed_inputs_include_modes_deletions_and_truncation(self):
+        (self.root / 'removed').touch()
+        self.wrapper.write_text('#!/bin/sh\nchmod 700 pom.xml\nrm removed\n' +
+                                ''.join(f'touch zero-{i:02}\n' for i in range(20)))
+        changed = self.invoke()
+        self.assertEqual(changed['changedInputs'], ['pom.xml', 'removed', *[f'zero-{i:02}' for i in range(18)]])
+        self.assertTrue(changed['changedInputsTruncated'])
+
     def test_cancellation_kills_group_and_invalidates_stamp(self):
         self.wrapper.write_text('#!/bin/sh\necho "$*" >> target/calls\ncase "$*" in *compile*) (sleep 1; echo survivor > orphan) & wait;; esac\nexit 0\n')
         self.assertTrue(self.invoke()['ok'])
@@ -288,6 +370,77 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result['stdout'], 'too-')
         self.assertFalse(result['ok'])
 
+    def test_timeout_allows_wrapper_to_finish_term_handler(self):
+        self.wrapper.write_text('#!/bin/sh\ntrap "echo done > target/stopped; exit 0" TERM\n'
+                                'while :; do sleep 10; done\n')
+        marker = self.root / 'target/stopped'
+        for own_group in (False, True):
+            with self.subTest(own_group=own_group):
+                result = run_build(self.request(timeoutMs=600), own_process_group=own_group)
+                self.assertTrue(result['timedOut'])
+                self.assertFalse(result['ok'])
+                self.assertEqual(marker.read_text().strip(), 'done')
+                self.assertEqual(result['exitCode'], 0)
+                marker.unlink()
+
+    def test_cli_group_cancellation_keeps_pipes_open_for_cleanup(self):
+        self.wrapper.write_text('#!' + sys.executable + '''
+import os, signal, sys, time
+from pathlib import Path
+def stop(signum, frame):
+    time.sleep(.1)
+    os.write(1, b'finishing')
+    Path('target/stopped').touch()
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+Path('target/calls').touch()
+signal.pause()
+''')
+        process = self.launch()
+        self.wait_for_calls()
+        os.killpg(process.pid, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=5)
+        self.assertTrue((self.root / 'target/stopped').exists(), stderr)
+        self.assertIn('cancelled by signal', json.loads(stdout)['error'])
+
+    def test_timeout_escalates_after_leader_exits(self):
+        # The child outlives its TERM-handling parent and must still receive KILL.
+        self.wrapper.write_text('#!/bin/sh\ntrap "exit 0" TERM\n'
+                                '(trap "" TERM; sleep 3; echo alive > target/survivor) &\nwait\n')
+        for own_group in (False, True):
+            with self.subTest(own_group=own_group):
+                result = run_build(self.request(timeoutMs=500), own_process_group=own_group)
+                self.assertTrue(result['timedOut'])
+                self.assertFalse(result['ok'])
+                time.sleep(3)
+                self.assertFalse((self.root / 'target/survivor').exists())
+
+    def test_hook_fingerprint_includes_descendant_cleanup(self):
+        self.wrapper.write_text('''#!/bin/sh
+(
+    trap 'echo finished > cleanup.log; exit 0' TERM
+    touch target/ready
+    while :; do sleep 10; done
+) >/dev/null 2>&1 &
+while [ ! -f target/ready ]; do sleep .02; done
+''')
+        result = run_build(self.request(), own_process_group=True)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['changedInputs'], ['cleanup.log'])
+        self.assertFalse(result['reused'])
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux parent-death signal')
+    def test_parent_death_before_exec_overrides_inherited_term_handler(self):
+        # Run the pre-exec check with a different parent from the one it captured.
+        script = '''import signal, sys
+sys.path.insert(0, sys.argv[1])
+from project_runtime import parent_death_signal
+signal.signal(signal.SIGTERM, lambda *_: None)
+parent_death_signal()()
+'''
+        result = subprocess.run([sys.executable, '-c', script, str(RUNTIME.parent)], timeout=5)
+        self.assertEqual(result.returncode, -signal.SIGTERM)
+
     def test_environment_and_executable_changes_invalidate(self):
         self.assertTrue(self.invoke()['ok'])
         self.wrapper.chmod(0o644)
@@ -295,6 +448,25 @@ class RuntimeTests(unittest.TestCase):
         env = dict(os.environ, CUSTOM_BUILD_MODE='changed')
         result = subprocess.run([sys.executable, str(RUNTIME)], input=json.dumps(self.request()), env=env, capture_output=True, text=True)
         self.assertFalse(json.loads(result.stdout)['reused'])
+
+    def test_hook_session_reuses_mcp_build_but_java_options_invalidate(self):
+        with patch.dict(os.environ):
+            for key in ('CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_PLUGIN_OPTION_APP_PORT', 'CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS'):
+                os.environ.pop(key, None)
+            with patch.dict(os.environ, CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS='mcp-session', TERM_SESSION_ID='first'):
+                self.assertTrue(self.invoke()['ok'])
+            os.environ.update(CLAUDE_CODE_CHILD_SESSION='hook-session', TERM_SESSION_ID='second')
+            self.assertTrue(self.invoke()['reused'])
+            os.environ['CLAUDE_PLUGIN_OPTION_APP_PORT'] = '8197'
+            self.assertTrue(self.invoke()['reused'])
+            with patch.dict(os.environ, JAVA_TOOL_OPTIONS='-Dfixture.mode=changed'):
+                self.assertFalse(self.invoke()['reused'])
+
+    def test_explicit_session_reference_still_invalidates(self):
+        (self.root / 'application.properties').write_text('port=${CLAUDE_PLUGIN_OPTION_APP_PORT}')
+        self.assertTrue(self.invoke()['ok'])
+        with patch.dict(os.environ, CLAUDE_PLUGIN_OPTION_APP_PORT='8197'):
+            self.assertFalse(self.invoke()['reused'])
 
     def test_symlink_directory_and_oversized_inputs_never_stamp(self):
         external = self.root / 'external'
