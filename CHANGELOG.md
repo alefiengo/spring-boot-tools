@@ -14,11 +14,15 @@ Entries marked **Behavior change** alter visible results.
   `compact` do not record a new baseline. A resumed or compacted session keeps
   the baseline recorded when it started, so it can still skip when nothing
   changed; a forked session has a new ID and no baseline, so it always verifies.
-  Stop never skips when the current fingerprint equals the one recorded for the
-  project's last Stop check that failed, timed out or blocked because inputs
-  changed. That record (`stop-unverified.json` in the project's private state
-  directory) is cleared by a passing `verify`; a passing `compile` clears only a
-  `compile` failure. An unreadable record never allows a skip. It can still skip
+  Stop never skips when the current fingerprint equals a failure recorded for
+  the project: the last `verify` and the last `compile` Stop check that failed,
+  timed out or blocked because inputs changed are kept separately in
+  `stop-unverified.json` (the project's private state directory, updated under
+  an exclusive lock with a 5-second wait). A compile result never replaces or
+  clears the `verify` entry; a passing `verify` clears both, a passing `compile`
+  only the `compile` entry, and failures recorded by a concurrent Stop after a
+  passing build started are kept. An unreadable, undecodable or locked record
+  never allows a skip. It can still skip
   a tree that changed outside Claude Code after the last Stop check and was
   never verified. The plugin now registers five hooks.
 - New options `stop_verification` (`verify` by default, `compile` or `off`) and
@@ -47,9 +51,11 @@ Entries marked **Behavior change** alter visible results.
   YAML scalar is checked, URL passwords with an unencoded `/` or `@` and JDBC
   `;password=` parameters are missed, and comments are checked for tokens only.
   In `.env` files a single-quoted value is literal, so `'${VAR}'` is flagged
-  (a credential inside a URL in such a value still treats `${VAR}` as a
-  placeholder); a block scalar indicator (`|` or `>`) after a credential key is
-  flagged as on the same line; `classpath:` and `file:` references under
+  like any literal, also as the password of a URL; a block scalar after a credential key is checked by its first content line:
+  with the indicator (`|` or `>`) on the key's line it is always flagged, with
+  the indicator on the next line the content is classified like an ordinary
+  value (a placeholder is allowed); the finding includes that content line, so
+  editing only the body of an existing block is detected; `classpath:` and `file:` references under
   `private-key`, `signing-key` or `credentials` are exempt on either line.
 
 ### MCP server
