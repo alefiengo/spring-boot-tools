@@ -54,7 +54,10 @@ const pom = '<project><modelVersion>4.0.0</modelVersion><groupId>app</groupId><a
 
 test('real stdio initializes and registers exactly seven tools', async t => {
   const client = await fixture(t, { 'pom.xml': pom });
-  assert.deepEqual((await client.request('tools/list', {})).tools.map(t => t.name).sort(), ['actuator_health','analyze_project','check_migrations','initialize_project','openapi_endpoints','run_build','run_tests']);
+  const { tools } = await client.request('tools/list', {});
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['actuator_health','analyze_project','check_migrations','initialize_project','openapi_endpoints','run_build','run_tests']);
+  const runTests = tools.find(tool => tool.name === 'run_tests');
+  assert.match(runTests.inputSchema.properties.testClass.description, /Gradle multi-project builds require a module/);
 });
 
 test('Maven and test filters reject shell payloads; valid wrapper args remain distinct', async t => {
@@ -64,7 +67,9 @@ test('Maven and test filters reject shell payloads; valid wrapper args remain di
   assert.equal((await client.call('run_tests', { testClass: '--scan' })).isError, true);
   assert.equal(await fs.stat(path.join(client.root, 'injected')).catch(() => null), null);
   assert.equal(value(await client.call('run_build', { task: 'compile' })).stdout, '-B\n-ntp\ncompile\n');
-  assert.equal(value(await client.call('run_tests', { testClass: 'com.app.AppTest' })).stdout, '-B\n-ntp\ntest\n-Dtest=com.app.AppTest\n');
+  const testArgs = value(await client.call('run_tests', { testClass: 'com.app.AppTest' })).stdout;
+  const mavenTestArgs = '-B\n-ntp\ntest\n-Dtest=com.app.AppTest\n';
+  assert.ok([mavenTestArgs, `${mavenTestArgs}-Dsurefire.failIfNoSpecifiedTests=false\n`].includes(testArgs), testArgs);
 });
 
 test('failed build keeps stdout diagnostics and excludes stale reports', async t => {
@@ -169,9 +174,19 @@ class Api {
 });
 
 test('long builds do not block read-only tools; cancellation terminates command', async t => {
-  const client = await fixture(t, { 'pom.xml': pom, mvnw: '#!/bin/sh\nmkdir -p target\ntrap \"touch target/cancelled.marker; exit 1\" TERM\necho started\nsleep 8\ntouch target/completed.marker\n' });
+  const client = await fixture(t, { 'pom.xml': pom, mvnw: `#!/bin/sh
+mkdir -p target
+# The runtime can close its pipes before the shell reports the interrupted sleep.
+exec 2>target/wrapper.stderr
+trap 'touch target/cancelled.marker; exit 1' TERM
+touch target/started.marker
+sleep 8
+touch target/completed.marker
+` });
   const build = client.call('run_build', { task: 'compile' });
-  await new Promise(resolve => setTimeout(resolve, 100));
+  const marker = name => fs.stat(path.join(client.root, `target/${name}.marker`)).catch(() => null);
+  for (let i = 0; i < 60 && !(await marker('started')); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(await marker('started'), 'build wrapper started');
   const start = Date.now();
   await client.call('analyze_project');
   assert.ok(Date.now() - start < 2000);
@@ -180,9 +195,9 @@ test('long builds do not block read-only tools; cancellation terminates command'
   // Initialize was ID 1; the build request is ID 2.
   client.cancel(2);
   await build;
-  for (let i = 0; i < 20 && !(await fs.stat(path.join(client.root, 'target/cancelled.marker')).catch(() => null)); i++) await new Promise(resolve => setTimeout(resolve, 50));
-  assert.ok(await fs.stat(path.join(client.root, 'target/cancelled.marker')).catch(() => null));
-  assert.equal(await fs.stat(path.join(client.root, 'target/completed.marker')).catch(() => null), null);
+  for (let i = 0; i < 20 && !(await marker('cancelled')); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(await marker('cancelled'));
+  assert.equal(await marker('completed'), null);
 });
 
 test('actuator respects configured app port and reports failed HTTP status', async t => {
@@ -314,6 +329,52 @@ test('runtime OpenAPI comparison returns routes without disclosing document secu
   assert.deepEqual(data.comparison.onlyRuntime.map(e => e.path), ['/runtime-only']);
   assert.deepEqual(hits, ['/v3/api-docs']);
   assert.doesNotMatch(result.content[0].text, /do-not-return/);
+});
+
+test('static endpoint versions require a literal version segment', async t => {
+  const client = await fixture(t, {
+    'pom.xml': pom,
+    'src/main/java/Api.java': `@RestController class Api {
+      @GetMapping({"/ping", "/v2", "/v3/users", "/v2beta", "/users/v1-info", "/\${api.path:/v9/ping}"}) void get() {}
+    }`,
+  });
+  const data = value(await client.call('openapi_endpoints'));
+  assert.deepEqual(data.endpoints.map(e => [e.path, e.version]), [
+    ['/ping', null], ['/v2', '2'], ['/v3/users', '3'], ['/v2beta', null], ['/users/v1-info', null], ['/${api.path:/v9/ping}', null],
+  ]);
+});
+
+test('OpenAPI comparison keeps placeholder mappings and possible runtime matches unresolved', async t => {
+  const baseUrl = await httpFixture(t, (_, res) => res.end(JSON.stringify({ openapi: '3.1.0', paths: {
+    '/prefix/v1/users': { get: {}, post: {} },
+    '/v1/users': { get: {} },
+    '/resolved/v1/v2/items/{id}': { get: {} },
+    '/shared': { get: {} },
+    '/other': { get: {} },
+  } })));
+  const client = await fixture(t, {
+    'pom.xml': pom,
+    'src/main/java/LiteralApi.java': `@RestController class LiteralApi {
+      @GetMapping({"/static-only", "/shared"}) void get() {}
+    }`,
+    'src/main/java/PlaceholderApi.java': `@RestController
+    @RequestMapping(path = {"\${api.base-path}/v1", "/literal/v4"}) class PlaceholderApi {
+      @GetMapping(path = {"/users", "/\${items.path:\${fallback:/v2/items}}/{id}"}) void get() {}
+    }`,
+  });
+  const data = value(await client.call('openapi_endpoints', { mode: 'compare', baseUrl }));
+  assert.deepEqual(data.static.warnings, [
+    'src/main/java/PlaceholderApi.java: placeholder ${api.base-path} cannot be resolved statically',
+    'src/main/java/PlaceholderApi.java: placeholder ${items.path:${fallback:/v2/items}} cannot be resolved statically',
+  ]);
+  assert.deepEqual(data.comparison.unresolved.map(e => [e.path, e.version]), [
+    ['/${api.base-path}/v1/users', '1'],
+    ['/${api.base-path}/v1/${items.path:${fallback:/v2/items}}/{id}', '1'],
+    ['/literal/v4/${items.path:${fallback:/v2/items}}/{id}', '4'],
+  ]);
+  assert.deepEqual(data.comparison.onlyStatic.map(e => e.path), ['/static-only', '/literal/v4/users']);
+  assert.deepEqual(data.comparison.onlyRuntime.map(e => [e.path, e.method]), [['/prefix/v1/users', 'POST'], ['/other', 'GET']]);
+  assert.deepEqual(data.comparison.unresolvedRuntime.map(e => e.path), ['/prefix/v1/users', '/v1/users', '/resolved/v1/v2/items/{id}']);
 });
 
 test('runtime OpenAPI validates YAML, invalid bodies and response size limits', async t => {
