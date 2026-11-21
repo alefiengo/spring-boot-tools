@@ -16,6 +16,25 @@
       "default": 8080,
       "min": 1,
       "max": 65535
+    },
+    "stop_verification": {
+      "type": "string",
+      "title": "Stop verification",
+      "description": "Build check when Claude stops: verify (Maven verify / Gradle check), compile, or off. Skipped when project inputs are unchanged since the session started.",
+      "default": "verify",
+      "options": [
+        "verify",
+        "compile",
+        "off"
+      ]
+    },
+    "stop_timeout_seconds": {
+      "type": "number",
+      "title": "Stop verification timeout",
+      "description": "Maximum seconds for the Stop build check (30 to 600)",
+      "default": 300,
+      "min": 30,
+      "max": 600
     }
   }
 }

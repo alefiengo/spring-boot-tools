@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Shared hook runtime. Python 3 standard library only; never executes input as shell."""
 import collections
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 
 
-def emit(event, message, decision='deny'):
+def emit(event, message, decision='deny', system=None):
     if event == 'PreToolUse':
         result = {'hookSpecificOutput': {'hookEventName': event, 'permissionDecision': decision,
                                        'permissionDecisionReason': message}}
@@ -16,6 +19,8 @@ def emit(event, message, decision='deny'):
         result = {'decision': 'block', 'reason': message}
     else:
         result = {'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'additionalContext': message}}
+    if system:
+        result['systemMessage'] = system
     print(json.dumps(result, ensure_ascii=False, separators=(',', ':')))
 
 
@@ -74,7 +79,7 @@ def introduced(before, after):
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'runtime'))
-from project_runtime import discover, run_build, BuildCancelled
+from project_runtime import discover, run_build, BuildCancelled, fingerprint, private_dir, state_dir
 from sql_lint import lint_hook
 
 
@@ -93,6 +98,19 @@ DDL_UNSAFE = re.compile(r"(?i)[\"']?(create-drop|create-only|drop-and-create|cre
 PROPERTIES_SPACE = re.compile(r'^[ \t]*([\w.-]{1,512})[ \t]+(?=[^\s:=])')
 MAX_VALUE = 4096
 MAX_PLACEHOLDER_DEPTH = 16
+COMPOSE_FILE = re.compile(r'(?:docker-)?compose(?:[.-][^/]*)?\.ya?ml')
+TEMPLATE_SUFFIXES = ('.example', '.sample', '.template')
+# Bounded scheme and userinfo keep scanning linear on long lines.
+URL_USERINFO = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{0,31}://([^\s/@'\"]{1,512})@")
+TOKENS = (
+    (re.compile(r'\b(?:AKIA|ASIA)([0-9A-Z]{16})\b'), 'AWS access key id'),
+    (re.compile(r'\b(?:gh[pousr]_([A-Za-z0-9]{36,255})|github_pat_([A-Za-z0-9_]{22,255}))'), 'GitHub token'),
+    (re.compile(r'\bxox[abprs]-([A-Za-z0-9-]{10,255})'), 'Slack token'),
+    (re.compile(r'-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY-----'), 'private key block'),
+)
+# A next-line YAML value that starts a sequence, mapping, tag, anchor, alias or
+# collection is nested structure, not a plain or quoted scalar.
+YAML_NESTED = re.compile(r"(?:-(?:\s|$)|[\w.-]{1,512}\s*:(?:\s|$)|[\"'][^\"']{0,512}[\"']\s*:(?:\s|$)|[?&*|>!{\[%@`])")
 
 
 def unquote(value):
@@ -171,12 +189,75 @@ def safe_placeholder(value):
     return False  # deeper nesting is treated as a literal
 
 
-def secret_findings(text, path):
+def compose_placeholder(value):
+    """Compose and .env interpolation: $NAME, ${NAME}, ${NAME:?error} or a safe ${NAME:-default}."""
+    for _ in range(MAX_PLACEHOLDER_DEPTH):
+        if re.fullmatch(r'\$[A-Za-z_]\w*', value):
+            return True
+        match = re.fullmatch(r'\$\{([A-Za-z_]\w*)(?:(:?[-?])(.*))?\}', value, re.S)
+        if not match:
+            return False
+        operator, default = match.group(2), match.group(3)
+        if operator is None or operator.endswith('?') or default.lower() in SAFE_VALUES:
+            return True
+        value = default
+    return False
+
+
+def literal(value, compose=False):
+    """True unless the value is empty, a known dummy or a placeholder."""
+    if value.lower() in SAFE_VALUES or re.fullmatch(r'<[^<>]+>', value) or safe_placeholder(value):
+        return False
+    return not (compose and compose_placeholder(value))
+
+
+def url_credential(line, compose):
+    """scheme://user:password@host with a literal password; the user part may be a placeholder."""
+    for match in URL_USERINFO.finditer(line):
+        userinfo, depth = match.group(1), 0
+        for index, char in enumerate(userinfo):
+            if char == '$' and userinfo[index + 1:index + 2] == '{':
+                depth += 1
+            elif char == '}' and depth:
+                depth -= 1
+            elif char == ':' and not depth:
+                if literal(userinfo[index + 1:], compose):
+                    return True
+                break
+    return False
+
+
+def token_finding(line):
+    """Well-known token formats; a body of one repeated character is a placeholder."""
+    for pattern, name in TOKENS:
+        for match in pattern.finditer(line):
+            body = next((group for group in match.groups() if group), '')
+            if not body or len(set(body)) > 1:
+                return name
+    return None
+
+
+def secret_findings(text, path, compose=False):
     findings = []
     yaml = path.suffix in ('.yaml', '.yml')
+    pending = None  # (indent, key, line) of a YAML credential key whose value starts on the next line
     for line in text.splitlines():
-        if line.lstrip().startswith(('#', '!')):
+        stripped = line.strip()
+        comment = line.lstrip().startswith(('#', '!'))
+        if pending and stripped and not comment:
+            indent, name, key_line = pending
+            pending = None
+            if (len(line) - len(line.lstrip()) > indent and not YAML_NESTED.match(stripped)
+                    and literal(unquote(stripped), compose)):
+                findings.append((key_line.strip() + '\n' + stripped, name))
+                continue
+        known_token = token_finding(line)
+        if comment:
+            # Commented-out values are examples, but a well-known token is leaked either way.
+            if known_token:
+                findings.append((stripped, known_token))
             continue
+        found = None
         flow = yaml and bool(re.search(r'(?:^|:)\s*\{', line))
         # A longer value stays a non-placeholder literal; bounded slices keep long lines linear.
         candidates = [(match.start(1), match.group(1), line[match.end():match.end() + MAX_VALUE])
@@ -196,29 +277,55 @@ def secret_findings(text, path):
             key = re.sub(r'[^a-z0-9]', '', name.lower())
             if not key.endswith(SECRET_SUFFIXES):
                 continue  # policy flags, credential names and token URLs are not credentials
+            if yaml and not flow and not raw.strip():
+                pending = (len(line) - len(line.lstrip()), name, line)
+                continue
             if key.endswith(('privatekey', 'signingkey', 'credentials')) and value.startswith(('classpath:', 'file:')):
                 continue  # key material remains in the referenced resource, not this scalar
             if value.startswith('{') or value in ('[]', '{}'):
                 continue  # nested configuration is inspected field by field
-            if value.lower() in SAFE_VALUES:
+            if not literal(value, compose):
                 continue
-            if re.fullmatch(r'<[^<>]+>', value):
-                continue
-            if safe_placeholder(value):
-                continue
-            findings.append((line.strip(), name))
+            found = name
             break  # findings are compared per line
+        if not found and url_credential(line, compose):
+            found = 'credentials in URL'
+        found = found or known_token
+        if found:
+            findings.append((stripped, found))
     return findings
 
 
+def secret_file(path):
+    """Committed configuration, compose files and env templates deny; local env files ask."""
+    name = path.name
+    if config_path(path):
+        return 'config'
+    if COMPOSE_FILE.fullmatch(name):
+        return 'compose'
+    if (name.startswith('.env') or '.env.' in name) and name.endswith(TEMPLATE_SUFFIXES):
+        return 'template'
+    if name == '.env' or name.startswith('.env.') or name.endswith('.env'):
+        return 'local'
+    if name.startswith('.env'):
+        return 'other'  # e.g. .envrc keeps the previous deny
+    return None
+
+
 def secrets(data, path):
-    if not (config_path(path) or path.name.startswith('.env') or path.name.endswith('.env')):
+    kind = secret_file(path)
+    if kind is None:
         return
+    compose = kind != 'config'  # Compose interpolation syntax is not Spring placeholder syntax
     current, proposal = contents(data, path)
-    name = introduced(secret_findings(current, path), secret_findings(proposal, path))
+    name = introduced(secret_findings(current, path, compose), secret_findings(proposal, path, compose))
     if name is None:
         return
-    if test_path(path):
+    if kind == 'local':
+        emit('PreToolUse', f'Possible hard-coded credential ({name}) in local environment file {path}. '
+             'Confirm the file is gitignored and holds only local development values; '
+             'commit only placeholders in a template such as .env.example.', decision='ask')
+    elif test_path(path):
         # Test fixtures legitimately hold throwaway credentials: let the user confirm.
         emit('PreToolUse', f'Possible hard-coded credential ({name}) in test configuration {path}. '
              'Confirm it is a throwaway test value, or use an environment variable.', decision='ask')
@@ -325,38 +432,178 @@ def ddl(data, path):
         emit('PreToolUse', f'Unsafe ddl-auto={unsafe} in {path}. Use migrations and ddl-auto=none or validate; development DDL requires a dev/local profile file, test configuration or a document activated only for dev/local.')
 
 
-def build(event, data):
-    location = Path(os.environ.get('CLAUDE_PROJECT_DIR') or data.get('cwd') or os.getcwd())
+STOP_MODES = ('verify', 'compile', 'off')
+STOP_TIMEOUT = (300, 30, 600)  # default, minimum, maximum seconds; hooks.json allows 660
+SESSION_BASELINES = 64
+# Exported only to some hook events; it must not make SessionStart and Stop fingerprints differ.
+EVENT_ONLY_ENV = ('CLAUDE_ENV_FILE',)
+MAX_CHANGED_LISTED = 10
+
+
+def stop_settings():
+    """Mode and timeout from userConfig. Claude Code exports CLAUDE_PLUGIN_OPTION_<KEY>
+    only for configured options, so an absent or empty value means the default."""
+    problems = []
+    mode = os.environ.get('CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION', '').strip()
+    if not mode:
+        mode = 'verify'
+    elif mode.lower() in STOP_MODES:
+        mode = mode.lower()
+    else:
+        problems.append(f'Ignoring invalid stop_verification {mode[:40]!r}; expected verify, compile or off. Using verify.')
+        mode = 'verify'
+    default, low, high = STOP_TIMEOUT
+    raw = os.environ.get('CLAUDE_PLUGIN_OPTION_STOP_TIMEOUT_SECONDS', '').strip()
+    seconds = default
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if low <= value <= high:
+            seconds = value
+        else:
+            problems.append(f'Ignoring invalid stop_timeout_seconds {raw[:40]!r}; expected {low} to {high}. Using {default}.')
+    return mode, round(seconds * 1000), problems
+
+
+def project_location(data):
+    return Path(os.environ.get('CLAUDE_PROJECT_DIR') or data.get('cwd') or os.getcwd())
+
+
+def session_fingerprint(root):
+    saved = {key: os.environ.pop(key) for key in EVENT_ONLY_ENV if key in os.environ}
     try:
-        info = discover(location)
+        return fingerprint(root)
+    finally:
+        os.environ.update(saved)
+
+
+def baseline_file(root, session):
+    folder = private_dir(state_dir(root) / 'sessions')
+    return folder / (hashlib.sha256(session.encode()).hexdigest() + '.json')
+
+
+def session_id(data):
+    session = data.get('session_id')
+    return session if isinstance(session, str) and 0 < len(session) <= 256 else None
+
+
+def record_baseline(data):
+    """SessionStart: remember the input fingerprint the session started with.
+
+    Cheap and silent: a missing project, an unfingerprintable tree or unusable
+    state only leaves no baseline, so Stop keeps verifying as before. Only a new
+    conversation (startup or /clear) records one, and an existing baseline is
+    never replaced. Resume, fork and compaction continue a conversation that may
+    already hold unverified edits, so they never record one.
+    """
+    session = session_id(data)
+    if session is None or data.get('source') not in ('startup', 'clear'):
+        return
+    try:
+        root = discover(project_location(data))['root']
+        path = baseline_file(root, session)
+        if path.exists() or path.is_symlink():
+            return
+        value = session_fingerprint(root)
+        handle, temporary = tempfile.mkstemp(prefix='baseline-', dir=path.parent)
+        try:
+            with os.fdopen(handle, 'w') as output:
+                json.dump({'session': session, 'fingerprint': value}, output)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        prune_baselines(path)
+    except (OSError, ValueError, KeyError):
+        return
+
+
+def prune_baselines(keep):
+    entries = []
+    for path in keep.parent.glob('*.json'):
+        try:
+            entries.append((path.lstat().st_mtime_ns, path))
+        except OSError:
+            continue
+    entries.sort(reverse=True)
+    for _, path in entries[SESSION_BASELINES:]:
+        if path != keep:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def unchanged_since_session_start(data, root):
+    """True only when this session's baseline exists and equals the current fingerprint."""
+    session = session_id(data)
+    if session is None:
+        return False
+    try:
+        handle = os.open(baseline_file(root, session), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(handle) as source:
+            stored = json.loads(source.read(4096))
+        baseline = stored.get('fingerprint') if stored.get('session') == session else None
+        return isinstance(baseline, str) and bool(re.fullmatch(r'[0-9a-f]{64}', baseline)) and session_fingerprint(root) == baseline
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def changed_inputs(result):
+    """'Changed: a, b (and more).' from the runtime's optional changedInputs list."""
+    changed = result.get('changedInputs')
+    if not isinstance(changed, list):
+        return ''
+    names = [re.sub(r'[\x00-\x1f\x7f]', '?', item)[:200] for item in changed if isinstance(item, str) and item]
+    if not names:
+        return ''
+    more = result.get('changedInputsTruncated') is True or len(names) > MAX_CHANGED_LISTED
+    return ' Changed: ' + ', '.join(names[:MAX_CHANGED_LISTED]) + (' (and more)' if more else '') + '.'
+
+
+def build(event, data):
+    mode, timeout, notes = stop_settings()
+
+    def finish(message=None):
+        if message and data.get('stop_hook_active') is not True:
+            emit(event, message, system='\n'.join(notes))
+        elif message or notes:
+            # Already continuing because of a Stop hook: report without blocking again.
+            notice('\n'.join([*([message] if message else []), *notes]))
+
+    if mode == 'off':
+        return finish()
+    try:
+        info = discover(project_location(data))
     except ValueError as error:
         if not str(error).startswith('No Maven or Gradle project found'):
-            notice(f'Spring Boot verification skipped: {error}')
-        return
+            notes.insert(0, f'Spring Boot verification skipped: {error}')
+        return finish()
+    if unchanged_since_session_start(data, info['root']):
+        return finish()
     try:
-        result = run_build({'projectRoot': info['root'], 'task': 'verify'}, own_process_group=True)
+        result = run_build({'projectRoot': info['root'], 'task': mode, 'timeoutMs': timeout}, own_process_group=True)
     except (OSError, ValueError, KeyError, TimeoutError, BuildCancelled) as error:
-        notice(str(error))
-        return
+        notes.insert(0, str(error))
+        return finish()
     if not result['ok']:
         detail = 'timed out' if result['timedOut'] else ('exceeded output limit' if result['outputLimitExceeded'] else f"exit {result['exitCode']}")
         output = result['stdout'] + result['stderr']
         message = f"Build check failed: {result['tasks'][0]} ({detail}) in {info['root']}.\n" + '\n'.join(output.splitlines()[:40])
     elif result.get('inputsChanged'):
-        message = 'Build inputs changed during verification. Run verification again on the final source contents.'
+        changed = changed_inputs(result)
+        message = (f"Build inputs changed during {'verification' if mode == 'verify' else 'the compile check'}.{changed} "
+                   'Run verification again on the final source contents.'
+                   + (' If these are build outputs, add them to .gitignore.' if changed else ''))
     else:
         message = None
     warnings = info.get('discoveryWarnings') or result.get('discoveryWarnings') or []
     if not message:
-        if warnings:
-            notice('\n'.join(warnings))
-        return
-    message = '\n'.join([message, *warnings])
-    if data.get('stop_hook_active') is True:
-        # Already continuing because of a Stop hook: report without blocking again.
-        notice(message)
-    else:
-        emit(event, message)
+        notes[:0] = warnings
+        return finish()
+    finish('\n'.join([message, *warnings]))
 
 
 def lint(data, path):
@@ -374,6 +621,9 @@ def main():
         return
     if action == 'verify-on-stop':
         build('Stop', data)
+        return
+    if action == 'session-baseline':
+        record_baseline(data)
         return
     args = data.get('tool_input', {})
     if not args.get('file_path'):

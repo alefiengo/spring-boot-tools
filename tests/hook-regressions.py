@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Run real hooks with JSON and isolated projects; builds use mock wrappers only."""
+from contextlib import redirect_stdout
 import hashlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import pwd
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTION = sys.argv.pop(1)
@@ -20,6 +25,14 @@ SQL_MESSAGES = {
     'loop': 'BEGIN/COMMIT with LOOP: verify transaction handling is intentional',
     'destructive': 'Destructive SQL: IF EXISTS does not protect data. Review backups, dependencies and rollback before applying. Never edit an already applied migration; add a new migration.',
 }
+
+def load_hook_runtime():
+    sys.dont_write_bytecode = True  # keep the shipped hooks directory free of caches
+    spec = importlib.util.spec_from_file_location('hook_runtime', ROOT / 'hooks/scripts/hook-runtime.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 def state_path(root):
     key = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()
@@ -35,6 +48,7 @@ class HookTests(unittest.TestCase):
 
     def invoke(self, file=None, content=None, **extra):
         action = extra.pop('action', ACTION)
+        options = extra.pop('env', {})
         args = {}
         if file is not None:
             args['file_path'] = str(file)
@@ -42,7 +56,8 @@ class HookTests(unittest.TestCase):
             args['content'] = content
         args.update(extra.pop('tool_input', {}))
         data = {'tool_input': args, **extra}
-        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(self.root))
+        env = {key: value for key, value in os.environ.items() if not key.startswith('CLAUDE_PLUGIN_OPTION_') and key != 'CLAUDE_ENV_FILE'}
+        env.update(options, CLAUDE_PROJECT_DIR=str(self.root))
         result = subprocess.run(['bash', str(ROOT / 'hooks/scripts' / (action+'.sh'))],
                                 input=json.dumps(data), capture_output=True, text=True, env=env, cwd=self.root)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -95,9 +110,89 @@ class HookTests(unittest.TestCase):
             self.assertIsNone(self.invoke(path, text))
         path.write_text('name: "app"\npassword: ${DB_PASSWORD}\n')
         self.deny(self.invoke(path, tool_input={'old_string':'${DB_PASSWORD}', 'new_string':'hunter2'}))
-        self.deny(self.invoke(self.root/'.env.production', 'DB_PASSWORD=hunter2\nOTHER=${ENV}'))
-        self.deny(self.invoke(self.root/'.env', 'PASSWORD=dummy,real-secret'))
+        self.deny(self.invoke(self.root/'.env.production', 'DB_PASSWORD=hunter2\nOTHER=${ENV}'), decision='ask')
+        self.deny(self.invoke(self.root/'.env', 'PASSWORD=dummy,real-secret'), decision='ask')
         self.assertIsNone(self.invoke(self.root/'Service.java', 'password: hunter2'))
+
+    def test_secret_local_env_files_ask(self):
+        if ACTION != 'guard-secrets': self.skipTest('other hook')
+        # The exact .env the spring-boot-docker skill recommends creating (gitignored, local-only).
+        skill_env = 'POSTGRES_USER=dev\nPOSTGRES_PASSWORD=dev-password\n'
+        for name in ('.env', '.env.local', '.env.production', 'db.env'):
+            with self.subTest(name=name):
+                output = self.invoke(self.root / name, skill_env)
+                self.deny(output, decision='ask')
+                self.assertIn('gitignored', output['hookSpecificOutput']['permissionDecisionReason'])
+        # Committed templates and other committed files keep deny for real-looking values.
+        for name in ('.env.example', '.env.sample', '.env.template', '.env.local.example', 'app.env.example'):
+            with self.subTest(name=name):
+                self.deny(self.invoke(self.root / name, skill_env))
+        self.deny(self.invoke(self.root / '.envrc', 'export DB_PASSWORD=hunter2'))
+        self.deny(self.invoke(self.root / 'src/main/resources/application.yml', 'password: dev-password'))
+        for name in ('.env', '.env.example'):
+            with self.subTest(name=name, placeholder=True):
+                self.assertIsNone(self.invoke(self.root / name, 'POSTGRES_USER=\nPOSTGRES_PASSWORD=\nAPI_TOKEN=<your-token>\n'))
+
+    def test_secret_urls_tokens_and_compose(self):
+        if ACTION != 'guard-secrets': self.skipTest('other hook')
+        yaml, properties = self.root / 'application.yml', self.root / 'application.properties'
+        aws = 'AKIA' + 'IOSFODNN7EXAMPLE'  # split so the source itself holds no token literal
+        github = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+        denied = (
+            (properties, 'spring.datasource.url=jdbc:postgresql://admin:S3cr3tPass@db:5432/app'),
+            (yaml, 'spring:\n  rabbitmq:\n    addresses: amqp://app:rabbit-pass@broker:5672'),
+            (yaml, 'spring.data.redis.url: redis://:redis-pass@cache:6379'),
+            (yaml, 'spring.data.mongodb.uri: "mongodb+srv://app:mongo-pass@cluster0.example.net/db"'),
+            (properties, 'app.remote=https://deploy:http-pass@repo.example.com/path'),
+            (properties, 'spring.datasource.url=jdbc:postgresql://${DB_USER:app}:literal-pass@db/app'),
+            (yaml, 'cloud:\n  aws:\n    access-key-id: ' + aws),
+            (properties, 'app.github=' + github),
+            (properties, 'app.github=github_pat_' + '11ABCDEFG0123456789_abcdefghijklmnopqrstuv'),
+            (yaml, 'slack:\n  bot: xoxb-' + '123456789012-abcdefghijklmnop'),
+            (yaml, '# leaked: ' + aws),
+            (properties, 'jwt.key=-----BEGIN RSA PRIVATE KEY-----'),
+            (yaml, 'jwt:\n  key: |\n    -----BEGIN PRIVATE KEY-----\n    MIIEvQIBADANBg\n    -----END PRIVATE KEY-----'),
+            (yaml, 'spring:\n  datasource:\n    password:\n      hunter2'),
+            (yaml, 'password:\n  # comment\n  "quoted-secret"'),
+            (self.root / 'docker-compose.yml', 'services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: hunter2'),
+            (self.root / 'docker-compose.prod.yaml', 'services:\n  db:\n    environment:\n      - POSTGRES_PASSWORD=hunter2'),
+            (self.root / 'compose.yaml', 'services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hunter2}'),
+            (self.root / 'compose.override.yml', 'services:\n  app:\n    environment:\n      SPRING_DATASOURCE_URL: jdbc:mysql://root:hunter2@db/app'),
+        )
+        for path, text in denied:
+            with self.subTest(text=text):
+                self.deny(self.invoke(path, text))
+        compose = (ROOT / 'skills/spring-boot-docker/SKILL.md').read_text().split('## docker-compose.yml')[1].split('```yaml\n')[1].split('```')[0]
+        allowed = (
+            (properties, 'spring.datasource.url=jdbc:postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/app'),
+            (properties, 'spring.datasource.url=jdbc:postgresql://${DB_USER:app}:${DB_PASSWORD}@db/app'),
+            (properties, 'spring.datasource.url=jdbc:postgresql://db:5432/app'),
+            (yaml, 'url: amqp://app:<password>@broker:5672'),
+            (yaml, 'url: redis://:changeme@cache:6379'),
+            (yaml, 'url: https://user@repo.example.com/path'),
+            (yaml, '# jdbc:postgresql://admin:example-pass@db/app'),
+            (yaml, 'cloud:\n  aws:\n    access-key-id: ${AWS_ACCESS_KEY_ID}'),
+            (yaml, 'cloud:\n  aws:\n    access-key-id: AKIAXXXXXXXXXXXXXXXX'),
+            (yaml, 'app:\n  github-token: ${GITHUB_TOKEN}'),
+            (yaml, 'jwt:\n  private-key: classpath:jwt.pem'),
+            (yaml, 'spring:\n  datasource:\n    password:\n      ${DB_PASSWORD}'),
+            (yaml, 'spring:\n  datasource:\n    password:\n    username: app'),
+            (yaml, 'spring:\n  security:\n    password:\n      encoder: bcrypt'),
+            (yaml, 'password:\n  - first'),
+            (self.root / 'docker-compose.yml', compose),
+            (self.root / 'docker-compose.yml', 'services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}'),
+            (self.root / 'compose.yaml', 'services:\n  db:\n    environment:\n      - POSTGRES_PASSWORD=$POSTGRES_PASSWORD\n      - REDIS_PASSWORD=${REDIS_PASSWORD:?set it}\n      - API_TOKEN=${API_TOKEN:-}'),
+            (self.root / 'composer.yml', 'password: hunter2'),
+        )
+        for path, text in allowed:
+            with self.subTest(text=text[:60]):
+                self.assertIsNone(self.invoke(path, text))
+        self.assertIn('POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}', compose)  # the skill snippet was found
+        # Only literals the edit introduces are flagged, for the new patterns as well.
+        properties.write_text('spring.datasource.url=jdbc:postgresql://admin:S3cr3tPass@db:5432/app\nserver.port=8080\n')
+        self.assertIsNone(self.invoke(properties, tool_input={'old_string': '8080', 'new_string': '8081'}))
+        self.deny(self.invoke(properties, tool_input={'old_string': 'S3cr3tPass', 'new_string': 'other-pass'}))
+        self.deny(self.invoke(self.root / 'src/test/resources/application.yml', 'url: jdbc:h2://sa:test-pass@mem/db'), decision='ask')
 
     def test_secret_only_flags_introduced_literals(self):
         if ACTION != 'guard-secrets': self.skipTest('other hook')
@@ -141,7 +236,8 @@ class HookTests(unittest.TestCase):
 
     def test_guard_input_cost_is_linear(self):
         if ACTION not in ('guard-secrets', 'guard-ddl'): self.skipTest('other hook')
-        for text in ('\n' * 200000 + 'x', ' ' + 'password' * 20000, 'password: x ' * 20000, 'ddl-auto: none ' * 20000):
+        for text in ('\n' * 200000 + 'x', ' ' + 'password' * 20000, 'password: x ' * 20000, 'ddl-auto: none ' * 20000,
+                     'a://b:' * 40000, 'x://' + '${' * 100000 + ':p@', 'AKIA' * 50000):
             start = time.monotonic()
             self.invoke(self.root / 'application.yml', text)
             self.assertLess(time.monotonic() - start, 5, text[:20])
@@ -368,6 +464,179 @@ class HookTests(unittest.TestCase):
         self.assertIsNone(self.invoke())
         self.assertEqual(len((self.root/'target/calls').read_text().splitlines()), 1)
 
+    def calls(self):
+        calls = self.root / 'target/calls'
+        return calls.read_text().splitlines() if calls.exists() else []
+
+    def start_session(self, session='session-1', source='startup', **extra):
+        return self.invoke(action='session-baseline', session_id=session, source=source, hook_event_name='SessionStart', **extra)
+
+    def test_stop_skips_when_unchanged_since_session_start(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper()
+        source = self.root / 'src/main/java/App.java'
+        source.parent.mkdir(parents=True)
+        source.write_text('class App {}')
+        # SessionStart-only variables must not make the baseline differ from Stop.
+        self.assertIsNone(self.start_session(env={'CLAUDE_ENV_FILE': str(self.root / 'session.env')}))
+        self.assertIsNone(self.invoke(session_id='session-1'))
+        self.assertEqual(self.calls(), [])
+        # Another session without a baseline keeps the previous behavior.
+        self.assertIsNone(self.invoke(session_id='other-session'))
+        self.assertEqual(self.calls(), ['-B -ntp verify'])
+        source.write_text('class App { int changed; }')
+        self.assertIsNone(self.invoke(session_id='session-1'))
+        self.assertEqual(len(self.calls()), 2)
+        # Reverting to the session start contents skips again.
+        source.write_text('class App {}')
+        self.assertIsNone(self.invoke(session_id='session-1'))
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_session_baseline_is_kept_and_only_recorded_for_new_conversations(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper()
+        source = self.root / 'src/main/java/App.java'
+        source.parent.mkdir(parents=True)
+        source.write_text('class App {}')
+        self.assertIsNone(self.start_session())
+        source.write_text('class App { int edited; }')
+        # Compaction or a repeated start of the same session never moves the baseline to unverified edits.
+        self.assertIsNone(self.start_session(source='compact'))
+        self.assertIsNone(self.start_session(source='startup'))
+        self.assertIsNone(self.start_session(source='clear'))
+        self.assertIsNone(self.invoke(session_id='session-1'))
+        self.assertEqual(len(self.calls()), 1)
+        # Resume, fork and compaction continue a conversation: no baseline, always verify.
+        for name in ('resume', 'fork', 'compact'):
+            with self.subTest(source=name):
+                self.assertIsNone(self.start_session(name, source=name))
+                (self.root / 'input.txt').write_text(name)  # defeat reuse
+                before = len(self.calls())
+                self.assertIsNone(self.invoke(session_id=name))
+                self.assertEqual(len(self.calls()), before + 1)
+        # A conversation started by /clear gets a fresh baseline like startup.
+        self.assertIsNone(self.start_session('cleared', source='clear'))
+        before = len(self.calls())
+        self.assertIsNone(self.invoke(session_id='cleared'))
+        self.assertEqual(len(self.calls()), before)
+        # Not a project, or an input that cannot be fingerprinted: silent, no baseline.
+        (self.root / 'linked.txt').symlink_to(self.root / 'input.txt')
+        self.assertIsNone(self.start_session('symlinked'))
+        self.assertIsNone(self.invoke(session_id='symlinked'))
+        self.assertEqual(len(self.calls()), before + 1)
+        empty = tempfile.TemporaryDirectory()
+        self.addCleanup(empty.cleanup)
+        result = subprocess.run(['bash', str(ROOT / 'hooks/scripts/session-baseline.sh')], capture_output=True, text=True,
+                                input=json.dumps({'session_id': 'x', 'source': 'startup'}),
+                                env=dict(os.environ, CLAUDE_PROJECT_DIR=empty.name), cwd=empty.name)
+        self.assertEqual((result.returncode, result.stdout), (0, ''))
+
+    def test_session_baselines_are_bounded(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper()
+        hooks = load_hook_runtime()
+        with mock.patch.object(hooks, 'SESSION_BASELINES', 3), mock.patch.dict(os.environ, {'CLAUDE_PROJECT_DIR': str(self.root)}):
+            for index in range(6):
+                with redirect_stdout(io.StringIO()) as output:
+                    hooks.record_baseline({'session_id': f's{index}', 'source': 'startup'})
+                self.assertEqual(output.getvalue(), '')
+            folder = state_path(self.root) / 'sessions'
+            self.assertEqual(len(list(folder.iterdir())), 3)
+            self.assertTrue(hooks.baseline_file(str(self.root), 's5').exists())
+            self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+
+    def test_stop_verification_modes(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        self.wrapper()
+        self.assertIsNone(self.invoke(env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'off'}))
+        self.assertEqual(self.calls(), [])
+        # compile mode runs the compile task and never satisfies the full verification gate.
+        self.assertIsNone(self.invoke(env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'compile'}))
+        self.assertEqual(self.calls(), ['-B -ntp compile'])
+        self.assertIsNone(self.invoke(env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'compile'}))
+        self.assertIsNone(self.invoke(env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': ''}))
+        self.assertEqual(self.calls(), ['-B -ntp compile', '-B -ntp compile', '-B -ntp verify'])
+        # An invalid value falls back to verify with a notice in the same JSON object.
+        (self.root / 'input.txt').write_text('defeat reuse')
+        output = self.invoke(env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'fast', 'CLAUDE_PLUGIN_OPTION_STOP_TIMEOUT_SECONDS': '5'})
+        self.assertIn("stop_verification 'fast'", output['systemMessage'])
+        self.assertIn("stop_timeout_seconds '5'", output['systemMessage'])
+        self.assertEqual(self.calls()[-1], '-B -ntp verify')
+        (self.root / 'pom.xml').unlink()
+        (self.root / 'build.gradle.kts').write_text('')
+        gradle = self.root / 'gradlew'
+        gradle.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> target/calls\nexit 3\n')
+        gradle.chmod(0o755)
+        output = self.invoke(env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'compile'})
+        self.assertEqual(self.calls()[-1], '--console=plain --no-daemon classes')
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('classes (exit 3)', output['reason'])
+        # Invalid configuration plus a failure still produces one JSON object with both.
+        output = self.invoke(env={'CLAUDE_PLUGIN_OPTION_STOP_VERIFICATION': 'bogus'})
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('check (exit 3)', output['reason'])
+        self.assertIn('bogus', output['systemMessage'])
+
+    def stop_with_stubbed_runtime(self, result, options=None):
+        hooks = load_hook_runtime()
+        (self.root / 'pom.xml').write_text('')
+        requests = []
+        def run_build(request, own_process_group=False):
+            requests.append(request)
+            return dict({'ok': True, 'exitCode': 0, 'stdout': '', 'stderr': '', 'tasks': [request['task']],
+                         'timedOut': False, 'outputLimitExceeded': False, 'inputsChanged': False}, **result)
+        env = {key: value for key, value in os.environ.items() if not key.startswith('CLAUDE_PLUGIN_OPTION_')}
+        env.update(options or {}, CLAUDE_PROJECT_DIR=str(self.root))
+        with mock.patch.object(hooks, 'run_build', run_build), mock.patch.dict(os.environ, env, clear=True), \
+                redirect_stdout(io.StringIO()) as output:
+            hooks.build('Stop', {})
+        text = output.getvalue()
+        return requests, json.loads(text) if text else None
+
+    def test_stop_timeout_reaches_runtime(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        for value, expected in ((None, 300000), ('', 300000), ('450', 450000), ('600', 600000), ('30.5', 30500),
+                                ('29', 300000), ('601', 300000), ('nan', 300000), ('soon', 300000)):
+            with self.subTest(value=value):
+                options = {} if value is None else {'CLAUDE_PLUGIN_OPTION_STOP_TIMEOUT_SECONDS': value}
+                requests, output = self.stop_with_stubbed_runtime({}, options)
+                self.assertEqual(requests, [{'projectRoot': str(self.root), 'task': 'verify', 'timeoutMs': expected}])
+                if expected == 300000 and value:
+                    self.assertIn('stop_timeout_seconds', output['systemMessage'])
+                else:
+                    self.assertIsNone(output)
+        config = json.loads((ROOT / 'hooks/hooks.json').read_text())['hooks']
+        stop = config['Stop'][0]['hooks'][0]
+        self.assertGreaterEqual(stop['timeout'], 630)  # outlives the 600 s maximum build
+        start = config['SessionStart'][0]
+        self.assertEqual(start['matcher'], 'startup|clear')
+        self.assertNotIn('user_config', json.dumps(config))  # shell-form hooks reject ${user_config.*}
+
+    def test_stop_names_changed_inputs(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        _, output = self.stop_with_stubbed_runtime({'inputsChanged': True, 'changedInputs': ['logs/app.log', 'db/h2.mv.db'],
+                                                    'changedInputsTruncated': True})
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('Build inputs changed during verification', output['reason'])
+        self.assertIn('Changed: logs/app.log, db/h2.mv.db (and more)', output['reason'])
+        self.assertIn('If these are build outputs, add them to .gitignore', output['reason'])
+        _, output = self.stop_with_stubbed_runtime({'inputsChanged': True, 'changedInputs': ['bad\nname'], 'changedInputsTruncated': False})
+        self.assertIn('Changed: bad?name.', output['reason'])
+        self.assertNotIn('(and more)', output['reason'])
+        # Without the runtime fields (older runtime) the previous message is kept.
+        _, output = self.stop_with_stubbed_runtime({'inputsChanged': True})
+        self.assertEqual(output['reason'], 'Build inputs changed during verification. Run verification again on the final source contents.')
+        _, output = self.stop_with_stubbed_runtime({'inputsChanged': True, 'changedInputs': 'logs/app.log'})
+        self.assertNotIn('Changed:', output['reason'])
+
+    def test_stop_build_writing_inputs_blocks_with_message(self):
+        if ACTION != 'verify-on-stop': self.skipTest('other hook')
+        wrapper = self.wrapper()
+        wrapper.write_text('#!/bin/sh\nmkdir -p logs\necho line >> logs/app.log\necho "$*" >> target/calls\n')
+        output = self.invoke()
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('Build inputs changed during verification', output['reason'])
+
     def test_lint(self):
         if ACTION != 'lint-migration': self.skipTest('other hook')
         directory = self.root/'src/main/resources/db/migration'
@@ -411,11 +680,15 @@ if __name__ == '__main__':
     methods = {
         'guard-secrets': ['test_secret', 'test_secret_only_flags_introduced_literals', 'test_secret_test_configuration_asks',
                           'test_secret_names_files_and_separators', 'test_guard_input_cost_is_linear',
-                          'test_test_paths_are_relative_to_the_project'],
+                          'test_test_paths_are_relative_to_the_project', 'test_secret_local_env_files_ask',
+                          'test_secret_urls_tokens_and_compose'],
         'guard-ddl': ['test_ddl', 'test_ddl_documents_keys_and_values', 'test_ddl_test_configuration_and_unrelated_edits',
                       'test_guard_input_cost_is_linear', 'test_test_paths_are_relative_to_the_project'],
         'verify-on-stop': ['test_stop_batches_edits_without_pending_markers', 'test_verify', 'test_verify_maven', 'test_mcp_verification_reused_by_stop', 'test_source_packages_named_build_target_docs', 'test_stop_sigterm_kills_child_session',
-                           'test_stop_reports_skipped_discovery', 'test_stop_never_runs_untrusted_ancestor_wrapper', 'test_stop_hangup_and_kill_never_orphan_build'],
+                           'test_stop_reports_skipped_discovery', 'test_stop_never_runs_untrusted_ancestor_wrapper', 'test_stop_hangup_and_kill_never_orphan_build',
+                           'test_stop_skips_when_unchanged_since_session_start', 'test_session_baseline_is_kept_and_only_recorded_for_new_conversations',
+                           'test_session_baselines_are_bounded', 'test_stop_verification_modes', 'test_stop_timeout_reaches_runtime',
+                           'test_stop_names_changed_inputs', 'test_stop_build_writing_inputs_blocks_with_message'],
         'lint-migration': ['test_lint', 'test_sql_policy_corpus'],
     }
     result = unittest.TextTestRunner().run(unittest.TestSuite(HookTests(name) for name in ['test_diagnostics', *methods[ACTION]]))
