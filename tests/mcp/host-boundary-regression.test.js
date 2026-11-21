@@ -121,7 +121,13 @@ test('a plugin root reached through a symlink still starts the server', async t 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   test(`${signal} shutdown terminates a running build instead of orphaning it`, async t => {
     const root = await temporary(t);
-    await write(root, { 'pom.xml': pom, mvnw: '#!/bin/sh\nmkdir -p target\ni=0\nwhile [ $i -lt 40 ]; do echo $i >> target/ticks; i=$((i+1)); sleep 0.1; done\ntouch target/completed\n' });
+    await write(root, { 'pom.xml': pom, mvnw: `#!/bin/sh
+mkdir -p target
+trap 'trap "" TERM; sleep 0.55; touch target/cleaned; exit 0' TERM
+i=0
+while [ $i -lt 40 ]; do echo $i >> target/ticks; i=$((i+1)); sleep 0.1; done
+touch target/completed
+` });
     const client = await server(t, root);
     const ticks = async () => (await fs.readFile(path.join(root, 'target/ticks'), 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
     client.call('run_build', { task: 'compile' }).catch(() => {});
@@ -130,6 +136,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     client.child.kill(signal);
     const exit = await client.exited;
     assert.equal(exit.code, 128 + os.constants.signals[signal]);
+    assert.ok(await fs.stat(path.join(root, 'target/cleaned')).catch(() => null), 'build finished TERM cleanup before server exit');
     const afterExit = await ticks();
     await new Promise(resolve => setTimeout(resolve, 800));
     assert.ok(await ticks() <= afterExit + 1, 'build stopped with the server');

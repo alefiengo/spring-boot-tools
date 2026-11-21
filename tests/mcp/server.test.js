@@ -68,8 +68,7 @@ test('Maven and test filters reject shell payloads; valid wrapper args remain di
   assert.equal(await fs.stat(path.join(client.root, 'injected')).catch(() => null), null);
   assert.equal(value(await client.call('run_build', { task: 'compile' })).stdout, '-B\n-ntp\ncompile\n');
   const testArgs = value(await client.call('run_tests', { testClass: 'com.app.AppTest' })).stdout;
-  const mavenTestArgs = '-B\n-ntp\ntest\n-Dtest=com.app.AppTest\n';
-  assert.ok([mavenTestArgs, `${mavenTestArgs}-Dsurefire.failIfNoSpecifiedTests=false\n`].includes(testArgs), testArgs);
+  assert.equal(testArgs, '-B\n-ntp\ntest\n-Dtest=com.app.AppTest\n-Dsurefire.failIfNoSpecifiedTests=false\n');
 });
 
 test('failed build keeps stdout diagnostics and excludes stale reports', async t => {

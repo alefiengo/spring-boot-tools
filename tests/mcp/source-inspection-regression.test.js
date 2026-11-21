@@ -40,9 +40,20 @@ test('project inventory skips invalid YAML documents and preserves valid ports',
     { file: 'src/main/resources/application.yml', ports: [8081, 8083] },
   ]);
   assert.deepEqual(project.ports, [8084, 8081, 8083]);
-  assert.equal(project.warnings.length, 1);
-  assert.match(project.warnings[0], /src\/main\/resources\/application\.yml: .*reserved character/);
-  assert.doesNotMatch(project.warnings[0], /@project\.version@/);
+  assert.deepEqual(project.warnings, ['src/main/resources/application.yml:4:10: Invalid YAML scalar']);
+});
+
+test('YAML conversion warnings omit unresolved alias values', async t => {
+  const client = await fixture(t, {
+    'pom.xml': '<project/>',
+    'src/main/resources/application.yml': '---\nx: *s3cr3tV4lue\n---\nserver.port: 8083\n',
+  });
+  const response = await client.call('analyze_project');
+  assert.equal(response.isError, undefined);
+  assert.doesNotMatch(response.content[0].text, /s3cr3tV4lue/);
+  const project = value(response);
+  assert.deepEqual(project.warnings, ['src/main/resources/application.yml: YAML document conversion failed']);
+  assert.deepEqual(project.ports, [8083]);
 });
 
 test('migration lint follows Gradle projectDir root for logical module selection', async t => {

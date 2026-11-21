@@ -11,11 +11,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
-import { parseAllDocuments } from "yaml";
+import { LineCounter, parseAllDocuments } from "yaml";
 
 // ── helpers ─────────────────────────────────────────────────────────
 
 const grouped = process.platform !== "win32";
+// Allow the runtime's 750 ms TERM grace before escalating from MCP.
+const childShutdownGraceMs = 1000;
 // Every running child, so a host shutdown signal can terminate their groups.
 const activeChildren = new Set();
 function killTree(child, sig) {
@@ -37,7 +39,7 @@ export function run(command, args = [], { cwd, timeout = 120_000, signal, input,
       kill("SIGTERM");
       // A leader can exit and close its pipes while descendants still ignore
       // SIGTERM. Keep escalation alive and wait for it before reporting done.
-      escalation = new Promise(done => setTimeout(() => { kill("SIGKILL"); done(); }, 1000));
+      escalation = new Promise(done => setTimeout(() => { kill("SIGKILL"); done(); }, childShutdownGraceMs));
     };
     const capture = (stream) => (chunk) => {
       const remaining = maxOutputBytes - size;
@@ -155,6 +157,16 @@ async function build(project, options, ctx, timeout = 120_000) {
 
 // ── tool implementations ────────────────────────────────────────────
 
+const yamlErrorCategories = new Map([
+  ["ALIAS_PROPS", "Invalid YAML alias"],
+  ["BAD_ALIAS", "Invalid YAML alias"],
+  ["BAD_DQ_ESCAPE", "Invalid YAML escape"],
+  ["BAD_INDENT", "Invalid YAML indentation"],
+  ["BAD_SCALAR_START", "Invalid YAML scalar"],
+  ["DUPLICATE_KEY", "Duplicate YAML key"],
+  ["TAB_AS_INDENT", "Invalid YAML indentation"],
+]);
+
 async function analyzeProject() {
   const project = await requireProject();
   const { root } = project;
@@ -191,14 +203,25 @@ async function analyzeProject() {
       if (!/application(?:-[^.]+)?\.(?:ya?ml|properties)$/.test(path.basename(file))) continue;
       const relative = path.relative(root, file);
       const content = await fs.readFile(file, "utf-8"), declaredPorts = [];
-      if (/\.properties$/.test(file)) for (const m of content.matchAll(/^[^\S\n]*server\.port[^\S\n]*[=:][^\S\n]*(\d+)[^\S\n]*$/gm)) declaredPorts.push(Number(m[1]));
-      else for (const doc of parseAllDocuments(content, { prettyErrors: false })) {
-        try {
-          if (doc.errors.length) throw doc.errors[0];
-          const config = doc.toJS(), port = config?.server?.port ?? config?.["server.port"];
-          if (/^\d+$/.test(String(port))) declaredPorts.push(Number(port));
-        } catch (error) {
-          warnings.push(`${relative}: ${error.message}`);
+      if (file.endsWith(".properties")) {
+        for (const m of content.matchAll(/^[^\S\n]*server\.port[^\S\n]*[=:][^\S\n]*(\d+)[^\S\n]*$/gm)) declaredPorts.push(Number(m[1]));
+      } else {
+        const lineCounter = new LineCounter();
+        for (const doc of parseAllDocuments(content, { prettyErrors: false, lineCounter })) {
+          const [error] = doc.errors;
+          if (error) {
+            const { line, col } = lineCounter.linePos(error.pos[0]);
+            const location = line > 0 ? `${relative}:${line}:${col}` : relative;
+            warnings.push(`${location}: ${yamlErrorCategories.get(error.code) ?? "Invalid YAML syntax"}`);
+            continue;
+          }
+          // Parser and conversion messages can contain configuration values.
+          try {
+            const config = doc.toJS(), port = config?.server?.port ?? config?.["server.port"];
+            if (/^\d+$/.test(String(port))) declaredPorts.push(Number(port));
+          } catch {
+            warnings.push(`${relative}: YAML document conversion failed`);
+          }
         }
       }
       configurations.push({ file: relative, ports: declaredPorts }); ports.push(...declaredPorts);
@@ -488,7 +511,7 @@ async function shutdown(signal) {
     if (child.exitCode !== null || child.signalCode !== null) done(); else child.once("close", done);
   })));
   for (const child of children) killTree(child, "SIGTERM");
-  await Promise.race([closed, new Promise(done => setTimeout(done, 400))]);
+  await Promise.race([closed, new Promise(done => setTimeout(done, childShutdownGraceMs))]);
   for (const child of activeChildren) killTree(child, "SIGKILL");
   process.exit(128 + (os.constants.signals[signal] || 0));
 }
